@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="ink">#12161C</color>
+    <color name="paper">#F3F5F7</color>
+    <color name="signal">#3F6CC4</color>
+    <color name="zxing_viewfinder_laser">#3F6CC4</color>
+    <color name="zxing_possible_result_points">#3F6CC4</color>
+    <color name="zxing_viewfinder_mask">#99000000</color>
+    <color name="zxing_status_text">#F3F5F7</color>
+    <color name="ic_launcher_background">#000000</color>
+</resources>
+

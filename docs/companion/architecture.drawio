@@ -1,0 +1,363 @@
+<mxfile host="embed.diagrams.net" pages="2">
+  <diagram id="layers" name="模块分层">
+    <mxGraphModel dx="4680" dy="3980" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1240" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p1-header" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#3F6CC4;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=20;align=left;spacingLeft=16;" value="VibeX Companion Android 架构" vertex="1">
+          <mxGeometry height="52" width="1600" x="40" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-sub" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#12161C;strokeColor=none;fontColor=#F3F5F7;fontSize=12;align=left;spacingLeft=16;" value="本仓是 Companion Device：连接在线 VibeX Host，观察并控制远端会话。不运行 Agent、Git worktree、MCP 或本机控制台。" vertex="1">
+          <mxGeometry height="32" width="1600" x="40" y="72" as="geometry" />
+        </mxCell>
+        <mxCell id="U9tUWilvOSpZBgLDClt2-1" edge="1" parent="1" source="p1-repo" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.75;exitY=0;exitDx=0;exitDy=0;" target="p1-header">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-repo" parent="1" style="swimlane;startSize=36;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=13;fontColor=#12161C;fillColor=#F3F5F7;strokeColor=#3F6CC4;strokeWidth=2;collapsible=0;" value="本仓  vibex-remote-android　　Gradle：:app → :companion-core　　Kotlin 17 / Compose / minSdk 26" vertex="1">
+          <mxGeometry height="784" width="1600" x="40" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui" parent="p1-repo" style="swimlane;startSize=30;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#dae8fc;strokeColor=#3F6CC4;collapsible=0;" value=":app  UI　·　Jetpack Compose　·　单列　·　底栏：文件夹 / 会话 / 状态 / 设置" vertex="1">
+          <mxGeometry height="168" width="1560" x="20" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-splash" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="开屏&#xa;SplashScreen" vertex="1">
+          <mxGeometry height="72" width="196" x="36" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-pair" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="配对&#xa;扫描 / 手填邀请" vertex="1">
+          <mxGeometry height="72" width="196" x="248" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-folders" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="文件夹&#xa;选项目后同步近 3 天" vertex="1">
+          <mxGeometry height="72" width="196" x="460" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-conv" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="会话 + 时间线&#xa;折叠 / 纠偏 / 待办卡" vertex="1">
+          <mxGeometry height="72" width="196" x="672" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-status" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="状态&#xa;待办 / 进行中 / 审核 / 完成" vertex="1">
+          <mxGeometry height="72" width="196" x="884" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-settings" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="设置&#xa;Host 档案 / 忘记 / 监控" vertex="1">
+          <mxGeometry height="72" width="196" x="1096" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ui-signal" parent="p1-ui" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="信号条&#xa;六种连接态主状态" vertex="1">
+          <mxGeometry height="72" width="216" x="1308" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-orch" parent="p1-repo" style="swimlane;startSize=30;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#e1d5e7;strokeColor=#9673a6;collapsible=0;" value=":app  编排" vertex="1">
+          <mxGeometry height="136" width="1560" x="20" y="232" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-model" parent="p1-orch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="CompanionModel&#xa;ViewModel · 连接 / attach / ping" vertex="1">
+          <mxGeometry height="68" width="340" x="40" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-uistate" parent="p1-orch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="UiState / Route&#xa;Onboarding → 四栏 + 时间线" vertex="1">
+          <mxGeometry height="68" width="320" x="410" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-monitor" parent="p1-orch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="CompanionMonitorService&#xa;前台服务 · 用户显式打开 · 无 FCM" vertex="1">
+          <mxGeometry height="68" width="360" x="760" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-appentry" parent="p1-orch" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="MainActivity / VibexApplication&#xa;allowBackup=false" vertex="1">
+          <mxGeometry height="68" width="370" x="1150" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-plat" parent="p1-repo" style="swimlane;startSize=30;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#fff2cc;strokeColor=#d6b656;collapsible=0;" value=":app  平台适配（Android 专用，不进 companion-core）" vertex="1">
+          <mxGeometry height="176" width="1560" x="20" y="384" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-http" parent="p1-plat" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="OkHttpTransport&#xa;HttpTransport 实现" vertex="1">
+          <mxGeometry height="96" width="200" x="40" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-ws" parent="p1-plat" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="EventSocket&#xa;GET /api/v1/ws&#xa;token 在子协议头" vertex="1">
+          <mxGeometry height="96" width="220" x="270" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-profiles" parent="p1-plat" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="ProfileStore&#xa;Host 档案&#xa;hostId + Reachability" vertex="1">
+          <mxGeometry height="108" width="190" x="520" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-creds" parent="p1-plat" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="CredentialStore&#xa;Device credential&#xa;Keystore AES-256" vertex="1">
+          <mxGeometry height="108" width="200" x="740" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-offline" parent="p1-plat" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="OfflineStore&#xa;离线事件缓存&#xa;through sequence · 只读" vertex="1">
+          <mxGeometry height="108" width="220" x="970" y="46" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-camera" parent="p1-plat" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="ZXing 扫码&#xa;vibex-pairing:&#xa;相机非必须" vertex="1">
+          <mxGeometry height="96" width="300" x="1220" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-core" parent="p1-repo" style="swimlane;startSize=30;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#d5e8d4;strokeColor=#82b366;collapsible=0;" value=":companion-core　JVM 纯 Kotlin　·　无 Android 依赖　·　协议模型来自 VibeX 快照" vertex="1">
+          <mxGeometry height="184" width="1560" x="20" y="576" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-invite" parent="p1-core" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="PairingInvitation&#xa;Host 身份 · Reachability&#xa;一次性 pairing token" vertex="1">
+          <mxGeometry height="108" width="210" x="24" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-coord" parent="p1-core" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="PairingCoordinator&#xa;OriginOrder&#xa;上次成功 → HTTPS → 其余" vertex="1">
+          <mxGeometry height="108" width="220" x="254" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-hostapi" parent="p1-core" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="HostApi&#xa;catalog / 会话命令&#xa;offline / 通知摘要" vertex="1">
+          <mxGeometry height="108" width="200" x="494" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-fold" parent="p1-core" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="EventFold&#xa;TimelineModels&#xa;未知 kind 必须保留" vertex="1">
+          <mxGeometry height="108" width="210" x="714" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-scopes" parent="p1-core" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="CompanionScopes&#xa;ConnectionState&#xa;非 online 禁止写" vertex="1">
+          <mxGeometry height="108" width="230" x="944" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-proto" parent="p1-core" style="shape=mxgraph.flowchart.document;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="RemoteProtocolModels&#xa;dev.vibex.remote.v1&#xa;快照禁止手改" vertex="1">
+          <mxGeometry height="116" width="330" x="1194" y="44" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-protocol" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#12161C;strokeColor=none;fontColor=#F3F5F7;fontSize=12;fontStyle=1;align=center;" value="Remote Protocol v1　　HTTP Authorization: Bearer　　WS Sec-WebSocket-Protocol: vibex.v1, vibex.token.{base64url}　　凭证永不进 URL / 日志 / 备份" vertex="1">
+          <mxGeometry height="44" width="1600" x="40" y="920" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#ffe6cc;strokeColor=#d79b00;collapsible=0;" value="VibeX Host（不在本仓 · 一份数据目录同一时刻只有一个 Host）" vertex="1">
+          <mxGeometry height="200" width="1600" x="40" y="980" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-pair" parent="p1-host" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d79b00;arcSize=8;" value="配对邀请 / redeem&#xa;五分钟一次性 secret" vertex="1">
+          <mxGeometry height="120" width="200" x="24" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-cap" parent="p1-host" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d79b00;arcSize=8;" value="capabilities&#xa;Host 身份 + Reachability&#xa;protocol_version" vertex="1">
+          <mxGeometry height="120" width="220" x="244" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-ctrl" parent="p1-host" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d79b00;arcSize=8;" value="ConversationControl&#xa;唯一写入口" vertex="1">
+          <mxGeometry height="120" width="210" x="484" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-log" parent="p1-host" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="Event log&#xa;会话权威&#xa;单调 sequence" vertex="1">
+          <mxGeometry height="120" width="180" x="714" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-agent" parent="p1-host" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#f5f5f5;strokeColor=#6B7380;dashed=1;arcSize=8;" value="Agent / Git / MCP / 插件&#xa;只活在 Host&#xa;手机不跑" vertex="1">
+          <mxGeometry height="120" width="280" x="914" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p1-host-console" parent="p1-host" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#f8cecc;strokeColor=#C43C3C;dashed=1;arcSize=8;" value="本机控制台&#xa;监听 · FRP · 管理员 token&#xa;Companion 禁止复制" vertex="1">
+          <mxGeometry height="120" width="350" x="1214" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-ui-orch" edge="1" parent="1" source="p1-ui" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="p1-orch">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-orch-plat" edge="1" parent="1" source="p1-orch" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="p1-plat">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-plat-core" edge="1" parent="1" source="p1-plat" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#d6b656;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="p1-core">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-core-proto" edge="1" parent="1" source="p1-core" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="p1-protocol">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-proto-host" edge="1" parent="1" source="p1-protocol" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#12161C;strokeWidth=2;exitX=0.5;exitY=1;entryX=0.5;entryY=0;" target="p1-host">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-http-hostapi" edge="1" parent="1" source="p1-hostapi" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1;dashed=1;" target="p1-http">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-ws-fold" edge="1" parent="1" source="p1-ws" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p1-fold">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e1-camera-invite" edge="1" parent="1" source="p1-camera" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1;dashed=1;" target="p1-invite">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+  <diagram id="runtime" name="运行时数据流">
+    <mxGraphModel dx="1760" dy="1493" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1680" pageHeight="1280" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+        <mxCell id="p2-header" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#3F6CC4;strokeColor=none;fontColor=#FFFFFF;fontStyle=1;fontSize=20;align=left;spacingLeft=16;" value="运行时数据流" vertex="1">
+          <mxGeometry height="52" width="1600" x="40" y="20" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-sub" parent="1" style="rounded=0;whiteSpace=wrap;html=1;fillColor=#12161C;strokeColor=none;fontColor=#F3F5F7;fontSize=12;align=left;spacingLeft=16;" value="配对按 Host 身份合并档案；连接按 Reachability 探测；时间线只折叠 Host 事件日志。实线蓝 = HTTP，实线绿 = WebSocket，虚线灰 = 本地存储。" vertex="1">
+          <mxGeometry height="32" width="1600" x="40" y="72" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-pair" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#dae8fc;strokeColor=#3F6CC4;collapsible=0;" value="1. 配对　扫描或粘贴 vibex-pairing:　已持有该 Host 身份则只合并 Reachability" vertex="1">
+          <mxGeometry height="250" width="1600" x="40" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-scan" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="扫描 QR&#xa;或手填 origin + token" vertex="1">
+          <mxGeometry height="72" width="180" x="24" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-parse" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="PairingInvitationParser&#xa;hostId · Reachability&#xa;一次性 pairing token" vertex="1">
+          <mxGeometry height="72" width="210" x="228" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-known" parent="p2-pair" style="rhombus;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;" value="已有该&#xa;Host 身份？" vertex="1">
+          <mxGeometry height="90" width="150" x="468" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-merge" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="合并 Reachability&#xa;不重新兑换" vertex="1">
+          <mxGeometry height="56" width="190" x="660" y="24" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-coord" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="PairingCoordinator&#xa;按 OriginOrder 探测" vertex="1">
+          <mxGeometry height="64" width="190" x="660" y="140" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-redeem" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="POST /api/v1/auth/pairings/redeem&#xa;换长期 Device credential" vertex="1">
+          <mxGeometry height="64" width="250" x="880" y="140" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-notoken" parent="p2-pair" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#f8cecc;strokeColor=#C43C3C;dashed=1;arcSize=8;" value="禁止粘贴管理员 token" vertex="1">
+          <mxGeometry height="48" width="250" x="880" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-creds" parent="p2-pair" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="CredentialStore&#xa;Keystore" vertex="1">
+          <mxGeometry height="88" width="160" x="1160" y="128" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-prof" parent="p2-pair" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="ProfileStore&#xa;Host 档案" vertex="1">
+          <mxGeometry height="88" width="160" x="1360" y="40" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-conn" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#fff2cc;strokeColor=#d6b656;collapsible=0;" value="2. 连接　选中档案后探测 origin；先 capabilities 再写；一条 WebSocket 多个订阅" vertex="1">
+          <mxGeometry height="200" width="1600" x="40" y="390" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-connect" parent="p2-conn" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="CompanionModel&#xa;connectSelected" vertex="1">
+          <mxGeometry height="80" width="200" x="24" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-origin" parent="p2-conn" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="OriginOrder&#xa;上次成功 → 远程 HTTPS → 其余" vertex="1">
+          <mxGeometry height="80" width="250" x="252" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-cap" parent="p2-conn" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="GET /health&#xa;GET /api/v1/capabilities" vertex="1">
+          <mxGeometry height="80" width="220" x="530" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-state" parent="p2-conn" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#d6b656;arcSize=8;" value="ConnectionState&#xa;connecting / online / recovering&#xa;offline / auth_required / incompatible" vertex="1">
+          <mxGeometry height="88" width="280" x="778" y="52" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ws" parent="p2-conn" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="EventSocket&#xa;一条 WS · attach / detach / ping" vertex="1">
+          <mxGeometry height="80" width="240" x="1086" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-gate" parent="p2-conn" style="rhombus;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#C43C3C;" value="仅 online&#xa;可写？" vertex="1">
+          <mxGeometry height="96" width="200" x="1356" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-evt" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#d5e8d4;strokeColor=#82b366;collapsible=0;" value="3. 会话与事件　Durable attach：ready → snapshot? → replay → live　以本地已确认 sequence 续传" vertex="1">
+          <mxGeometry height="260" width="1600" x="40" y="610" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-catalog" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="HostApi.catalog&#xa;conversation_list_recent&#xa;先选项目 · 近 3 天" vertex="1">
+          <mxGeometry height="90" width="210" x="24" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-attach" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="attach&#xa;resource=conversation&#xa;after_sequence" vertex="1">
+          <mxGeometry height="90" width="200" x="262" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-stream" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="ready → snapshot?&#xa;→ replay → live&#xa;重复 sequence 丢弃" vertex="1">
+          <mxGeometry height="90" width="220" x="490" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-fold" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#82b366;arcSize=8;" value="EventFold&#xa;未知 kind 保留 JSON&#xa;不把缺失用量填成 0" vertex="1">
+          <mxGeometry height="90" width="230" x="738" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-timeline" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="Timeline rows&#xa;稳定 id + revision" vertex="1">
+          <mxGeometry height="64" width="220" x="996" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-inbox" parent="p2-evt" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#fff2cc;strokeColor=#D48A2A;arcSize=8;" value="待办 PendingItem&#xa;权限 / 提问 / 卡住的 Turn" vertex="1">
+          <mxGeometry height="64" width="220" x="996" y="132" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-off" parent="p2-evt" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="OfflineStore&#xa;through sequence&#xa;只读 · 禁止离线排队写" vertex="1">
+          <mxGeometry height="140" width="310" x="1250" y="56" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-cmd" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#e1d5e7;strokeColor=#9673a6;collapsible=0;" value="4. 写入　只在 online　命令带 operation_id　中断 Turn 须手点重试" vertex="1">
+          <mxGeometry height="230" width="1000" x="40" y="890" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-submit" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="跟进 / 排队输入" vertex="1">
+          <mxGeometry height="56" width="170" x="20" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-steer" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="Turn 纠偏" vertex="1">
+          <mxGeometry height="56" width="170" x="210" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-cancel" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="取消在途 Turn" vertex="1">
+          <mxGeometry height="56" width="170" x="400" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-perm" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="批准 / 拒绝权限" vertex="1">
+          <mxGeometry height="56" width="170" x="590" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-question" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#9673a6;arcSize=8;" value="回答提问" vertex="1">
+          <mxGeometry height="56" width="190" x="780" y="50" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-rpc" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#3F6CC4;arcSize=8;" value="HostApi RPC" vertex="1">
+          <mxGeometry height="64" width="260" x="20" y="132" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-ctrl" parent="p2-cmd" style="rounded=1;whiteSpace=wrap;html=1;fontSize=11;fontColor=#12161C;fillColor=#ffe6cc;strokeColor=#d79b00;arcSize=8;" value="Host ConversationControl" vertex="1">
+          <mxGeometry height="64" width="280" x="310" y="132" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-log" parent="p2-cmd" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=10;fontSize=11;fontColor=#12161C;fillColor=#ffffff;strokeColor=#6B7380;" value="Event log&#xa;再经 WS 回来" vertex="1">
+          <mxGeometry height="80" width="340" x="620" y="120" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-forbid" parent="1" style="swimlane;startSize=32;html=1;whiteSpace=wrap;rounded=1;fontStyle=1;fontSize=12;fontColor=#12161C;fillColor=#f8cecc;strokeColor=#C43C3C;collapsible=0;" value="Companion 不做" vertex="1">
+          <mxGeometry height="230" width="580" x="1060" y="890" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-forbid-body" parent="p2-forbid" style="rounded=1;whiteSpace=wrap;html=1;fontSize=12;fontColor=#12161C;align=left;spacingLeft=12;fillColor=#ffffff;strokeColor=#C43C3C;dashed=1;arcSize=8;" value="Git 写 · 终端 · 工作区文件写&#xa;MCP / 插件安装与启用&#xa;监听端口 · FRP · 管理员 token&#xa;FCM / APNs · 自动重发中断 Turn&#xa;离线排队写 · 把缺失用量填成 0&#xa;手写第二份协议权威" vertex="1">
+          <mxGeometry height="160" width="540" x="20" y="48" as="geometry" />
+        </mxCell>
+        <mxCell id="p2-legend" parent="1" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F3F5F7;strokeColor=#6B7380;fontSize=12;fontColor=#12161C;" value="蓝实线 HTTP　·　绿实线 WebSocket　·　灰虚线 本地持久化　·　红框 禁止面 / 仓外运维" vertex="1">
+          <mxGeometry height="40" width="1600" x="40" y="1140" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-scan-parse" edge="1" parent="1" source="p2-scan" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-parse">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-parse-known" edge="1" parent="1" source="p2-parse" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-known">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-known-merge" edge="1" parent="1" source="p2-known" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;fontSize=11;" target="p2-merge" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-known-coord" edge="1" parent="1" source="p2-known" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;fontSize=11;" target="p2-coord" value="否">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-merge-prof" edge="1" parent="1" source="p2-merge" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1.5;dashed=1;" target="p2-prof">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-coord-redeem" edge="1" parent="1" source="p2-coord" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-redeem">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-redeem-creds" edge="1" parent="1" source="p2-redeem" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1.5;dashed=1;" target="p2-creds">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-redeem-prof" edge="1" parent="1" source="p2-redeem" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1.5;dashed=1;" target="p2-prof">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-connect-origin" edge="1" parent="1" source="p2-connect" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#d6b656;strokeWidth=1.5;" target="p2-origin">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-origin-cap" edge="1" parent="1" source="p2-origin" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-cap">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-cap-state" edge="1" parent="1" source="p2-cap" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-state">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-state-ws" edge="1" parent="1" source="p2-state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p2-ws">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-state-gate" edge="1" parent="1" source="p2-state" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#C43C3C;strokeWidth=1.5;" target="p2-gate">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-ws-attach" edge="1" parent="1" source="p2-ws" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p2-attach">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-catalog-attach" edge="1" parent="1" source="p2-catalog" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p2-attach">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-attach-stream" edge="1" parent="1" source="p2-attach" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p2-stream">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-stream-fold" edge="1" parent="1" source="p2-stream" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;" target="p2-fold">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-fold-tl" edge="1" parent="1" source="p2-fold" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-timeline">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-fold-inbox" edge="1" parent="1" source="p2-fold" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#D48A2A;strokeWidth=1.5;" target="p2-inbox">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-fold-off" edge="1" parent="1" source="p2-fold" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#6B7380;strokeWidth=1.5;dashed=1;" target="p2-off">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-gate-submit" edge="1" parent="1" source="p2-gate" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1.5;fontSize=11;" target="p2-submit" value="是">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-submit-rpc" edge="1" parent="1" source="p2-submit" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1;" target="p2-rpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-steer-rpc" edge="1" parent="1" source="p2-steer" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1;" target="p2-rpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-cancel-rpc" edge="1" parent="1" source="p2-cancel" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1;" target="p2-rpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-perm-rpc" edge="1" parent="1" source="p2-perm" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1;" target="p2-rpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-q-rpc" edge="1" parent="1" source="p2-question" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#9673a6;strokeWidth=1;" target="p2-rpc">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-rpc-ctrl" edge="1" parent="1" source="p2-rpc" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-ctrl">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-ctrl-log" edge="1" parent="1" source="p2-ctrl" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#3F6CC4;strokeWidth=1.5;" target="p2-log">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2-log-stream" edge="1" parent="1" source="p2-log" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;endArrow=classic;strokeColor=#82b366;strokeWidth=1.5;dashed=1;fontSize=11;" target="p2-stream" value="WS 回放">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

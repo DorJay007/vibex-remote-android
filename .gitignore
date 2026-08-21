@@ -1,0 +1,13 @@
+.DS_Store
+.idea/
+.gradle/
+.kotlin/
+build/
+local.properties
+*.iml
+captures/
+.cxx/
+keystore.properties
+*.jks
+*.keystore
+.git-commit-helper.sh

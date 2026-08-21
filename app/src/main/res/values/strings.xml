@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">VibeX</string>
+    <string name="scan_prompt">将连接二维码放入框内</string>
+</resources>
+
