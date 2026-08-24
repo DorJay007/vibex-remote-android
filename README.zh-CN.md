@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vibex.com"><img src="https://img.shields.io/badge/Website-vibex.com-111111?style=flat-square" alt="Official website" /></a>
+  <a href="https://vibex.xforever.xin"><img src="https://img.shields.io/badge/Website-vibex.xforever.xin-111111?style=flat-square" alt="Official website" /></a>
   <a href="https://github.com/Xircth/vibex-companion/releases/latest"><img src="https://img.shields.io/badge/Download-Latest_Release-111111?style=flat-square" alt="Download latest release" /></a>
   <img src="https://img.shields.io/badge/Platform-Android_8%2B-111111?style=flat-square" alt="Android 8 or later" />
   <img src="https://img.shields.io/badge/Protocol-Remote_v1-111111?style=flat-square" alt="Remote Protocol v1" />
@@ -18,8 +18,8 @@
 </p>
 
 <p align="center">
-  <a href="https://vibex.com">官网</a> ·
-  <a href="https://vibex.com/docs">文档</a> ·
+  <a href="https://vibex.xforever.xin">官网</a> ·
+  <a href="https://vibex.xforever.xin/docs">文档</a> ·
   <a href="https://github.com/Xircth/VibeX">VibeX Host</a> ·
   <a href="https://github.com/Xircth/vibex-companion/releases/latest">下载</a>
 </p>
@@ -71,7 +71,7 @@ VibeX Companion 是 [VibeX](https://github.com/Xircth/VibeX) Host 家族中的 *
 
 Server Profile 由 Host 身份区分，而不是某条 URL。局域网、Tailscale、FRP 等都可以作为同一 Host 的 Reachability。
 
-Host 侧完整步骤见[连接 Host](https://vibex.com/docs/connect-host)。
+Host 侧完整步骤见[连接 Host](https://vibex.xforever.xin/docs/connect-host)。
 
 ## 下载与安装
 

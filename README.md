@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="https://vibex.com"><img src="https://img.shields.io/badge/Website-vibex.com-111111?style=flat-square" alt="Official website" /></a>
+  <a href="https://vibex.xforever.xin"><img src="https://img.shields.io/badge/Website-vibex.xforever.xin-111111?style=flat-square" alt="Official website" /></a>
   <a href="https://github.com/Xircth/vibex-companion/releases/latest"><img src="https://img.shields.io/badge/Download-Latest_Release-111111?style=flat-square" alt="Download latest release" /></a>
   <img src="https://img.shields.io/badge/Platform-Android_8%2B-111111?style=flat-square" alt="Android 8 or later" />
   <img src="https://img.shields.io/badge/Protocol-Remote_v1-111111?style=flat-square" alt="Remote Protocol v1" />
@@ -18,8 +18,8 @@
 </p>
 
 <p align="center">
-  <a href="https://vibex.com">Website</a> ·
-  <a href="https://vibex.com/docs">Docs</a> ·
+  <a href="https://vibex.xforever.xin">Website</a> ·
+  <a href="https://vibex.xforever.xin/docs">Docs</a> ·
   <a href="https://github.com/Xircth/VibeX">VibeX Host</a> ·
   <a href="https://github.com/Xircth/vibex-companion/releases/latest">Download</a>
 </p>
@@ -71,7 +71,7 @@ You cannot:
 
 The Host identity, not a URL, is what a Server Profile represents. Several origins (LAN, Tailscale, FRP, and similar) can point at the same Host.
 
-Full Host-side steps: [Connect a Host](https://vibex.com/docs/connect-host).
+Full Host-side steps: [Connect a Host](https://vibex.xforever.xin/docs/connect-host).
 
 ## Download and installation
 
