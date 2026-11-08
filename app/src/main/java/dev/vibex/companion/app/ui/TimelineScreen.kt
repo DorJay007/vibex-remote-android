@@ -42,6 +42,7 @@ import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.Build
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.Checklist
+import androidx.compose.material.icons.rounded.Code
 import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.ExpandLess
@@ -153,6 +154,7 @@ fun TimelinePane(state: UiState, model: CompanionModel, conversationId: String) 
     var draft by remember { mutableStateOf(TokenDraft()) }
     var showInfo by remember { mutableStateOf(false) }
     var showOptions by remember { mutableStateOf(false) }
+    var showDiffs by remember { mutableStateOf(false) }
     var dockOpen by remember { mutableStateOf(false) }
     var artifactFiles by remember { mutableStateOf<List<ComposerToken>>(emptyList()) }
     var workspaceFiles by remember { mutableStateOf<List<ComposerToken>>(emptyList()) }
@@ -241,6 +243,11 @@ fun TimelinePane(state: UiState, model: CompanionModel, conversationId: String) 
             )
             Row(Modifier.align(Alignment.CenterEnd), verticalAlignment = Alignment.CenterVertically) {
                 AgentAvatar(agentId, 24.dp, agent?.iconSvg, agent?.displayName.orEmpty())
+                PressSurface(onClick = { showDiffs = true }, radius = 12.dp, modifier = Modifier.size(40.dp)) {
+                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Code, "代码差异", tint = colors.textPrimary, modifier = Modifier.size(20.dp))
+                    }
+                }
                 PressSurface(onClick = { showInfo = true }, radius = 12.dp, modifier = Modifier.size(44.dp)) {
                     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Icon(Icons.Rounded.Menu, "会话信息", tint = colors.textPrimary)
@@ -329,10 +336,12 @@ fun TimelinePane(state: UiState, model: CompanionModel, conversationId: String) 
             onSend = { model.send(conversationId, draft.materialize()); draft = TokenDraft() },
             onCancel = { model.cancel(conversationId) },
             onSummary = { showOptions = true },
+            onShowDiffs = { showDiffs = true },
         )
     }
     if (showInfo) SessionInfoSheet(state, conversationId, model, SessionDrawerKind.Info) { showInfo = false }
     if (showOptions) SessionInfoSheet(state, conversationId, model, SessionDrawerKind.AgentOptions) { showOptions = false }
+    if (showDiffs) CodeDiffSheet(state, model, workspaceId, conversationId) { showDiffs = false }
     }
 }
 
@@ -594,6 +603,7 @@ private fun Composer(
     tagMentions: List<ComposerToken> = emptyList(),
     summary: String, enabled: Boolean, inFlight: Boolean, canSteer: Boolean,
     onSend: () -> Unit, onCancel: () -> Unit, onSummary: () -> Unit,
+    onShowDiffs: () -> Unit = {},
 ) {
     val colors = VibexTheme.colors
     val canSend = !draft.isBlank && enabled
@@ -634,7 +644,17 @@ private fun Composer(
                     }
                 }
                 filesLabel?.let {
-                    Text(it, fontSize = 12.sp, color = colors.textSecondary, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 4.dp))
+                    Text(
+                        it,
+                        fontSize = 12.sp,
+                        color = colors.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onShowDiffs)
+                            .padding(horizontal = 6.dp, vertical = 4.dp),
+                    )
                 }
                 Spacer(Modifier.weight(1f))
                 ComposerIcon(Icons.Rounded.Lightbulb, "提示词优化", enabled = false, onClick = {})

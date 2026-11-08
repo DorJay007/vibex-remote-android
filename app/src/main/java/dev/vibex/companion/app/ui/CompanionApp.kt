@@ -8,12 +8,12 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.outlined.FolderOpen
 import androidx.compose.material.icons.outlined.Forum
+import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.SpaceDashboard
-import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.Forum
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material.icons.rounded.SpaceDashboard
 import androidx.compose.runtime.Composable
@@ -25,7 +25,6 @@ import com.journeyapps.barcodescanner.ScanOptions
 import dev.vibex.companion.NoticeSeverity
 import dev.vibex.companion.app.CompanionModel
 import dev.vibex.companion.app.Route
-import dev.vibex.companion.app.SettingsSection
 import dev.vibex.companion.app.UiState
 import dev.vibex.companion.app.ui.theme.VibexTheme
 
@@ -36,14 +35,19 @@ fun CompanionApp(state: UiState, model: CompanionModel) {
 
 @Composable
 private fun CompanionShell(state: UiState, model: CompanionModel) {
-    val colors = VibexTheme.colors
     val scan = rememberLauncherForActivityResult(ScanContract()) { result ->
         result.contents?.let(model::pairFromRaw)
     }
     val fullscreen = state.route is Route.Timeline
     val settingsSub = (state.route as? Route.Settings)?.section != null
-    BackHandler(enabled = fullscreen || settingsSub) {
-        if (fullscreen) model.go(Route.Conversations) else model.go(Route.Settings())
+    val inCollabChat = state.route is Route.Collaboration && state.selectedThread != null
+    BackHandler(enabled = fullscreen || settingsSub || inCollabChat || state.route is Route.Folders) {
+        when {
+            fullscreen -> model.go(Route.Conversations)
+            settingsSub -> model.go(Route.Settings())
+            inCollabChat -> model.closeCollaborationThread()
+            state.route is Route.Folders -> model.go(Route.Conversations)
+        }
     }
     if (state.route is Route.Onboarding || state.route is Route.ManualPair) {
         GlowBackground {
@@ -54,15 +58,30 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
         return
     }
     val tabs = listOf(
-        LiquidTab("文件夹", Icons.Outlined.FolderOpen, Icons.Rounded.FolderOpen, state.route is Route.Folders) { model.go(Route.Folders) },
         LiquidTab(
-            "会话",
+            "对话",
             Icons.Outlined.Forum,
             Icons.Rounded.Forum,
-            state.route is Route.Conversations || state.route is Route.Timeline,
+            state.route is Route.Conversations || state.route is Route.Timeline || state.route is Route.Folders,
         ) { model.go(Route.Conversations) },
-        LiquidTab("状态", Icons.Outlined.SpaceDashboard, Icons.Rounded.SpaceDashboard, state.route is Route.Status) { model.go(Route.Status) },
-        LiquidTab("设置", Icons.Outlined.Settings, Icons.Rounded.Settings, state.route is Route.Settings) { model.go(Route.Settings()) },
+        LiquidTab(
+            "看板",
+            Icons.Outlined.SpaceDashboard,
+            Icons.Rounded.SpaceDashboard,
+            state.route is Route.Status,
+        ) { model.go(Route.Status) },
+        LiquidTab(
+            "协作空间",
+            Icons.Outlined.Groups,
+            Icons.Rounded.Groups,
+            state.route is Route.Collaboration,
+        ) { model.go(Route.Collaboration) },
+        LiquidTab(
+            "设置",
+            Icons.Outlined.Settings,
+            Icons.Rounded.Settings,
+            state.route is Route.Settings,
+        ) { model.go(Route.Settings()) },
     )
     GlowBackground {
         Box(Modifier.fillMaxSize()) {
@@ -78,6 +97,7 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
                     Route.Folders -> FoldersScreen(state, model)
                     Route.Conversations -> ConversationList(state, model)
                     Route.Status -> StatusScreen(state, model)
+                    Route.Collaboration -> CollaborationScreen(state, model)
                     is Route.Settings -> SettingsScreen(
                         state,
                         model,

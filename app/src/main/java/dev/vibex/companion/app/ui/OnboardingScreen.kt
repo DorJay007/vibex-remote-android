@@ -25,6 +25,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -36,6 +37,7 @@ import dev.vibex.companion.app.ui.theme.VibexTheme
 @Composable
 fun OnboardingScreen(state: UiState, model: CompanionModel, onScan: () -> Unit) {
     val colors = VibexTheme.colors
+    val clipboard = LocalClipboardManager.current
     val manual = state.route is Route.ManualPair
     var origin by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
@@ -89,6 +91,14 @@ fun OnboardingScreen(state: UiState, model: CompanionModel, onScan: () -> Unit) 
             ) { Text("扫描连接二维码", color = colors.accent) }
         } else {
             PrimaryButton("扫描连接二维码", onScan, loading = state.pairing)
+            SecondaryButton(
+                "从剪贴板粘贴邀请码",
+                {
+                    val raw = clipboard.getText()?.text.orEmpty().trim()
+                    if (raw.isNotBlank()) model.pairFromRaw(raw)
+                },
+                enabled = !state.pairing,
+            )
             SecondaryButton("手动输入连接码", { model.go(Route.ManualPair) }, enabled = !state.pairing)
         }
         state.error?.let {

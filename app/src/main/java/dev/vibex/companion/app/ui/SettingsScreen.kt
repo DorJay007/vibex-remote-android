@@ -21,14 +21,20 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.LinkOff
 import androidx.compose.material.icons.outlined.QrCodeScanner
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.ChatBubbleOutline
 import androidx.compose.material.icons.rounded.Dns
+import androidx.compose.material.icons.rounded.Extension
+import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LightMode
 import androidx.compose.material.icons.rounded.Link
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Shield
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -36,17 +42,26 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import dev.vibex.companion.ExtensionCatalogItem
+import dev.vibex.companion.SubagentRoleItem
 import dev.vibex.companion.app.CompanionModel
 import dev.vibex.companion.app.SettingsSection
 import dev.vibex.companion.app.UiState
@@ -68,8 +83,9 @@ fun SettingsScreen(
     onScan: () -> Unit,
 ) {
     when (section) {
-        null -> SettingsIndex(onOpen)
-        SettingsSection.Connection -> SettingsPage("连接", onBack) { ConnectionSettings(state, model, onScan) }
+        null -> SettingsIndex(state, onOpen)
+        SettingsSection.Connection -> SettingsPage("已配对的电脑", onBack) { ConnectionSettings(state, model, onScan) }
+        SettingsSection.Extensions -> SettingsPage("技能与扩展", onBack) { ExtensionsSettings(state, model) }
         SettingsSection.Appearance -> SettingsPage("外观", onBack) { AppearanceSettings(state, model) }
         SettingsSection.Stream -> SettingsPage("消息流控制", onBack) { StreamSettings(state, model) }
         SettingsSection.Host -> SettingsPage("Host", onBack) { HostSettings(state) }
@@ -79,13 +95,20 @@ fun SettingsScreen(
 }
 
 @Composable
-private fun SettingsIndex(onOpen: (SettingsSection) -> Unit) {
+private fun SettingsIndex(state: UiState, onOpen: (SettingsSection) -> Unit) {
     val colors = VibexTheme.colors
+    val selected = state.profiles.find { it.hostId == state.selectedHostId }
     LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(16.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item { Text("设置", style = MaterialTheme.typography.headlineLarge, color = colors.textPrimary, textAlign = TextAlign.Center, modifier = Modifier.fillMaxWidth()) }
         item {
             GlassCard {
-                IndexRow(Icons.Rounded.Link, "连接", "Host 档案、同步与本机") { onOpen(SettingsSection.Connection) }
+                IndexRow(
+                    Icons.Rounded.Link,
+                    "已配对的电脑",
+                    selected?.let { "${it.name} · 共 ${state.profiles.size} 台设备" } ?: "扫码、粘贴邀请码或手动连接",
+                ) { onOpen(SettingsSection.Connection) }
+                HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 48.dp))
+                IndexRow(Icons.Rounded.Extension, "技能与扩展", "技能 · MCP · 插件 · 子代理") { onOpen(SettingsSection.Extensions) }
                 HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 48.dp))
                 IndexRow(Icons.Rounded.LightMode, "外观", "浅色、深色或跟随系统") { onOpen(SettingsSection.Appearance) }
                 HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 48.dp))
@@ -95,7 +118,7 @@ private fun SettingsIndex(onOpen: (SettingsSection) -> Unit) {
                 HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 48.dp))
                 IndexRow(Icons.Rounded.Shield, "能力", "这台设备可用的 Host 能力") { onOpen(SettingsSection.Capabilities) }
                 HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 48.dp))
-                IndexRow(Icons.Rounded.Info, "关于", "VibeX Companion") { onOpen(SettingsSection.About) }
+                IndexRow(Icons.Rounded.Info, "关于", "VibeX Companion v0.4.3") { onOpen(SettingsSection.About) }
             }
         }
     }
@@ -239,10 +262,16 @@ private fun LazyListScope.ConnectionSettings(state: UiState, model: CompanionMod
             }
         }
     }
-    item { GroupLabel("操作") }
+    item { GroupLabel("新增与操作") }
     item {
+        val clipboard = LocalClipboardManager.current
         GlassCard {
-            SettingsAction(Icons.Outlined.QrCodeScanner, "再扫描邀请", "更新这台 Host 的地址") { onScan() }
+            SettingsAction(Icons.Outlined.QrCodeScanner, "扫码配对新的电脑", "扫描桌面端远程连接二维码") { onScan() }
+            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 48.dp))
+            SettingsAction(Icons.Rounded.Link, "从剪贴板粘贴邀请码", "直接粘贴桌面端复制的连接码或链接") {
+                val raw = clipboard.getText()?.text.orEmpty().trim()
+                if (raw.isNotBlank()) model.pairFromRaw(raw)
+            }
             HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 48.dp))
             var confirm by remember { mutableStateOf(false) }
             SettingsAction(Icons.Outlined.LinkOff, "忘记这台 Host", selected?.name ?: "撤销这台设备") { confirm = true }
@@ -367,6 +396,168 @@ private fun LazyListScope.CapabilitySettings(state: UiState) {
     }
 }
 
+private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionModel) {
+    item {
+        LaunchedEffect(Unit) {
+            model.loadExtensionsCatalog()
+        }
+        var tab by remember { mutableIntStateOf(0) }
+        val tabs = listOf(
+            "技能 (${state.skillsCatalog.size})",
+            "MCP (${state.mcpCatalog.size})",
+            "插件 (${state.pluginsCatalog.size})",
+            "子代理 (${state.subagentRoles.size})",
+        )
+        val colors = VibexTheme.colors
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(colors.bgElevated)
+                    .padding(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                tabs.forEachIndexed { idx, label ->
+                    val selected = tab == idx
+                    Text(
+                        label,
+                        fontSize = 12.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = if (selected) colors.onAccent else colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(9.dp))
+                            .background(if (selected) colors.accent else Color.Transparent)
+                            .clickable { tab = idx }
+                            .padding(vertical = 8.dp),
+                    )
+                }
+            }
+            if (state.extensionsLoading) {
+                Row(
+                    Modifier.fillMaxWidth().padding(vertical = 20.dp),
+                    horizontalArrangement = Arrangement.Center,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    CircularProgressIndicator(Modifier.size(18.dp), color = colors.accent, strokeWidth = 2.dp)
+                }
+            } else {
+                when (tab) {
+                    0 -> CatalogCardList(state.skillsCatalog, "暂无本地或全局 Agent 技能")
+                    1 -> CatalogCardList(state.mcpCatalog, "暂无已配置的 MCP 服务")
+                    2 -> CatalogCardList(state.pluginsCatalog, "暂无已安装的插件")
+                    3 -> SubagentRolesList(state.subagentRoles)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CatalogCardList(items: List<ExtensionCatalogItem>, emptyTitle: String) {
+    val colors = VibexTheme.colors
+    if (items.isEmpty()) {
+        GlassCard {
+            Text(
+                emptyTitle,
+                color = colors.textSecondary,
+                modifier = Modifier.fillMaxWidth().padding(20.dp),
+                textAlign = TextAlign.Center,
+            )
+        }
+        return
+    }
+    GlassCard {
+        items.forEachIndexed { index, item ->
+            if (index > 0) HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 16.dp))
+            Row(
+                Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(item.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
+                        if (item.kind.isNotBlank()) {
+                            Text(
+                                item.kind,
+                                fontSize = 10.sp,
+                                fontFamily = PlexMono,
+                                color = colors.accent,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(colors.accent.copy(0.12f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                    }
+                    if (item.summary.isNotBlank()) {
+                        Text(item.summary, fontSize = 12.sp, color = colors.textSecondary, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                    }
+                }
+                Text(
+                    item.status.ifBlank { "已安装" },
+                    fontSize = 11.sp,
+                    color = if (item.status.contains("停用") || item.status.contains("禁用")) colors.textTertiary else Color(0xFF10B981),
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SubagentRolesList(roles: List<SubagentRoleItem>) {
+    val colors = VibexTheme.colors
+    val grouped = remember(roles) { roles.groupBy { it.teamName.ifBlank { "内置子代理角色" } } }
+    Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        grouped.forEach { (team, items) ->
+            GroupLabel(team)
+            GlassCard {
+                items.forEachIndexed { index, role ->
+                    if (index > 0) HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 16.dp))
+                    Column(
+                        Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                            Icon(
+                                if (role.isBuiltin) Icons.Rounded.AutoAwesome else Icons.Rounded.Groups,
+                                null,
+                                tint = colors.accent,
+                                modifier = Modifier.size(16.dp),
+                            )
+                            Text(role.name, fontSize = 14.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                            Text(
+                                "@${role.id}",
+                                fontSize = 11.sp,
+                                fontFamily = PlexMono,
+                                color = colors.accent,
+                                modifier = Modifier
+                                    .clip(RoundedCornerShape(6.dp))
+                                    .background(colors.accent.copy(0.12f))
+                                    .padding(horizontal = 6.dp, vertical = 2.dp),
+                            )
+                        }
+                        if (role.summary.isNotBlank()) {
+                            Text(role.summary, fontSize = 12.sp, color = colors.textSecondary)
+                        }
+                        if (role.agentId.isNotBlank()) {
+                            Text(
+                                "引擎: ${role.agentId}",
+                                fontSize = 11.sp,
+                                fontFamily = PlexMono,
+                                color = colors.textTertiary,
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 private fun LazyListScope.AboutSettings() {
     item {
         GlassCard {
@@ -374,7 +565,7 @@ private fun LazyListScope.AboutSettings() {
                 SettingsIconBadge(Icons.Rounded.Info)
                 Column(Modifier.padding(horizontal = 12.dp)) {
                     Text("VibeX Companion", style = MaterialTheme.typography.titleMedium, color = VibexTheme.colors.textPrimary)
-                    Text("1.0.0 · 只连接 Host", style = MaterialTheme.typography.bodyMedium, color = VibexTheme.colors.textTertiary)
+                    Text("v0.4.3 (协议 v1.0) · 本地优先多智能体协同客户端", style = MaterialTheme.typography.bodyMedium, color = VibexTheme.colors.textTertiary)
                 }
             }
         }

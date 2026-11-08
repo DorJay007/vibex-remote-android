@@ -7,10 +7,13 @@ import androidx.lifecycle.viewModelScope
 import dev.vibex.companion.AuthRequiredException
 import dev.vibex.companion.CatalogAgent
 import dev.vibex.companion.CatalogWorkspace
+import dev.vibex.companion.CollaborationMessageItem
+import dev.vibex.companion.CollaborationThreadSummary
 import dev.vibex.companion.ConnectionState
 import dev.vibex.companion.ConversationSummary
 import dev.vibex.companion.ConversationView
 import dev.vibex.companion.EventFold
+import dev.vibex.companion.ExtensionCatalogItem
 import dev.vibex.companion.HostApi
 import dev.vibex.companion.HostOrigin
 import dev.vibex.companion.OriginOrder
@@ -20,7 +23,9 @@ import dev.vibex.companion.PairingInvitationParser
 import dev.vibex.companion.PendingItem
 import dev.vibex.companion.ReachabilityTarget
 import dev.vibex.companion.SessionCatalog
+import dev.vibex.companion.SubagentRoleItem
 import dev.vibex.companion.TimelineSession
+import dev.vibex.companion.WorkspaceFileDiff
 import dev.vibex.companion.applyCreateTimeSessionConfig
 import dev.vibex.companion.app.data.CredentialStore
 import dev.vibex.companion.app.data.HostProfile
@@ -70,10 +75,21 @@ data class UiState(
     val hostProtocol: String = "",
     val hostId: String = "",
     val hostCapabilities: List<String> = emptyList(),
+    val collaborationThreads: List<CollaborationThreadSummary> = emptyList(),
+    val collaborationLoading: Boolean = false,
+    val selectedThread: CollaborationThreadSummary? = null,
+    val collaborationMessages: List<CollaborationMessageItem> = emptyList(),
+    val skillsCatalog: List<ExtensionCatalogItem> = emptyList(),
+    val mcpCatalog: List<ExtensionCatalogItem> = emptyList(),
+    val pluginsCatalog: List<ExtensionCatalogItem> = emptyList(),
+    val subagentRoles: List<SubagentRoleItem> = emptyList(),
+    val extensionsLoading: Boolean = false,
+    val workspaceDiffs: List<WorkspaceFileDiff> = emptyList(),
+    val diffsLoading: Boolean = false,
     val route: Route = Route.Conversations,
 )
 
-enum class SettingsSection { Connection, Appearance, Stream, Host, Capabilities, About }
+enum class SettingsSection { Connection, Extensions, Appearance, Stream, Host, Capabilities, About }
 
 sealed class Route {
     data object Onboarding : Route()
@@ -81,6 +97,7 @@ sealed class Route {
     data object Folders : Route()
     data object Conversations : Route()
     data object Status : Route()
+    data object Collaboration : Route()
     data class Settings(val section: SettingsSection? = null) : Route()
     data object NewConversation : Route()
     data class Timeline(val conversationId: String) : Route()
@@ -591,6 +608,123 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun loadWorkspaceDiffs(workspaceId: String, conversationId: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(diffsLoading = true) }
+            val diffs = runCatching {
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) { api.listWorkspaceDiffs(origin, token, workspaceId, conversationId) }
+            }.getOrDefault(emptyList())
+            _state.update { it.copy(workspaceDiffs = diffs, diffsLoading = false) }
+        }
+    }
+
+    private fun currentCollaborationWorkspaceId(): String {
+        val state = _state.value
+        val projectId = state.selectedProjectId ?: state.catalog?.projects?.firstOrNull()?.id
+        return state.catalog?.workspaces.orEmpty()
+            .firstOrNull { projectId == null || it.projectId == projectId }?.id
+            ?: state.conversations.firstOrNull()?.workspaceId.orEmpty()
+    }
+
+    fun loadCollaboration() {
+        viewModelScope.launch {
+            _state.update { it.copy(collaborationLoading = true) }
+            runCatching {
+                val (origin, token) = live()
+                val wsId = currentCollaborationWorkspaceId()
+                val threads = withContext(Dispatchers.IO) { api.listCollaborationThreads(origin, token, wsId) }
+                _state.update { it.copy(collaborationThreads = threads, collaborationLoading = false) }
+                val activeThread = _state.value.selectedThread
+                if (activeThread != null) {
+                    val messages = withContext(Dispatchers.IO) { api.listCollaborationMessages(origin, token, activeThread.id) }
+                    _state.update { it.copy(collaborationMessages = messages) }
+                }
+            }.onFailure {
+                _state.update { s -> s.copy(collaborationLoading = false) }
+            }
+        }
+    }
+
+    fun openCollaborationThread(thread: CollaborationThreadSummary) {
+        _state.update { it.copy(selectedThread = thread, collaborationMessages = emptyList()) }
+        viewModelScope.launch {
+            runCatching {
+                val (origin, token) = live()
+                val messages = withContext(Dispatchers.IO) { api.listCollaborationMessages(origin, token, thread.id) }
+                _state.update { it.copy(collaborationMessages = messages) }
+            }
+        }
+    }
+
+    fun closeCollaborationThread() {
+        _state.update { it.copy(selectedThread = null, collaborationMessages = emptyList()) }
+    }
+
+    fun sendCollaborationMessage(content: String) {
+        val thread = _state.value.selectedThread ?: return
+        if (content.isBlank() || !_state.value.connection.allowsWrites) return
+        viewModelScope.launch {
+            runCatching {
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) { api.submitCollaborationMessage(origin, token, thread.id, content) }
+                val messages = withContext(Dispatchers.IO) { api.listCollaborationMessages(origin, token, thread.id) }
+                _state.update { it.copy(collaborationMessages = messages) }
+            }.onFailure { fail(it) }
+        }
+    }
+
+    fun createCollaborationGroup(name: String) {
+        if (name.isBlank() || !_state.value.connection.allowsWrites) return
+        viewModelScope.launch {
+            runCatching {
+                val (origin, token) = live()
+                val wsId = currentCollaborationWorkspaceId()
+                withContext(Dispatchers.IO) { api.createCollaborationGroup(origin, token, wsId, name) }
+                loadCollaboration()
+            }.onFailure { fail(it) }
+        }
+    }
+
+    fun createCollaborationBot(name: String, agentId: String, description: String) {
+        if (name.isBlank() || !_state.value.connection.allowsWrites) return
+        viewModelScope.launch {
+            runCatching {
+                val (origin, token) = live()
+                val wsId = currentCollaborationWorkspaceId()
+                withContext(Dispatchers.IO) {
+                    api.createCollaborationBot(origin, token, wsId, name, agentId.ifBlank { "claude_code" }, description)
+                }
+                loadCollaboration()
+            }.onFailure { fail(it) }
+        }
+    }
+
+    fun loadExtensionsCatalog() {
+        viewModelScope.launch {
+            _state.update { it.copy(extensionsLoading = true) }
+            runCatching {
+                val (origin, token) = live()
+                val wsId = currentCollaborationWorkspaceId()
+                val skills = withContext(Dispatchers.IO) { api.listSkillsCatalog(origin, token) }
+                val mcps = withContext(Dispatchers.IO) { api.listMcpCatalog(origin, token) }
+                val plugins = withContext(Dispatchers.IO) { api.listPluginCatalog(origin, token) }
+                val roles = withContext(Dispatchers.IO) { api.listSubagentRoles(origin, token, wsId) }
+                _state.update {
+                    it.copy(
+                        skillsCatalog = skills,
+                        mcpCatalog = mcps,
+                        pluginsCatalog = plugins,
+                        subagentRoles = roles,
+                        extensionsLoading = false,
+                    )
+                }
+            }.onFailure {
+                _state.update { s -> s.copy(extensionsLoading = false) }
+            }
+        }
+    }
+
     private suspend fun fetchCatalog(openNew: Boolean) {
         _state.update { it.copy(catalogLoading = true) }
         try {
@@ -598,16 +732,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             val catalog = withContext(Dispatchers.IO) { api.catalog(origin, token) }
             val selected = _state.value.selectedProjectId
             val stillValid = selected != null && catalog.projects.any { it.id == selected }
+            val resolvedProject = if (stillValid) selected else catalog.projects.firstOrNull()?.id
             _state.update {
                 it.copy(
                     catalog = catalog,
                     catalogLoading = false,
-                    selectedProjectId = if (stillValid) selected else selected,
+                    selectedProjectId = resolvedProject,
                     route = if (openNew) Route.NewConversation else it.route,
                     error = null,
                 )
             }
-            if (stillValid) {
+            if (resolvedProject != null) {
                 loadConversations()
             }
         } catch (error: Throwable) {

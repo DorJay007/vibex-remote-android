@@ -32,6 +32,54 @@ data class CatalogAgent(
 data class CatalogTag(val id: String, val name: String, val content: String = "")
 data class WorkspaceEntry(val name: String, val path: String, val directory: Boolean)
 
+data class WorkspaceFileDiff(
+    val path: String,
+    val status: String,
+    val diff: String,
+    val addedLines: Int = 0,
+    val removedLines: Int = 0,
+)
+
+data class CollaborationThreadSummary(
+    val id: String,
+    val kind: String,
+    val name: String,
+    val subtitle: String,
+    val agentId: String = "",
+    val memberId: String = "",
+    val unreadCount: Int = 0,
+    val updatedAt: String = "",
+)
+
+data class CollaborationMessageItem(
+    val id: String,
+    val seq: Long,
+    val senderName: String,
+    val senderKind: String,
+    val agentId: String = "",
+    val content: String,
+    val createdAt: String = "",
+    val receipts: List<String> = emptyList(),
+)
+
+data class SubagentRoleItem(
+    val id: String,
+    val name: String,
+    val teamId: String = "",
+    val teamName: String = "",
+    val summary: String = "",
+    val agentId: String = "",
+    val isBuiltin: Boolean = false,
+)
+
+data class ExtensionCatalogItem(
+    val id: String,
+    val name: String,
+    val summary: String = "",
+    val kind: String = "",
+    val status: String = "",
+)
+
 data class SessionCatalog(
     val projects: List<CatalogProject>,
     val workspaces: List<CatalogWorkspace>,
@@ -447,6 +495,309 @@ class HostApi(
         return "$outcome · $at"
     }
 
+    fun listWorkspaceDiffs(
+        origin: HostOrigin,
+        token: String,
+        workspaceId: String,
+        conversationId: String = "",
+    ): List<WorkspaceFileDiff> {
+        val raw = runCatching {
+            val args = linkedMapOf<String, Any?>()
+            if (workspaceId.isNotBlank()) args["workspaceId"] = workspaceId
+            if (conversationId.isNotBlank()) args["conversationId"] = conversationId
+            call(origin, token, "conversation_workspace_diff", args)
+        }.getOrNull()
+        val items = raw?.asArray()?.value ?: raw?.asObject()?.arrOrNull("files", "diffs", "items").orEmpty()
+        return items.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val path = obj.textAny("path", "filePath", "file_path", "name")
+            if (path.isBlank()) return@mapNotNull null
+            val diff = obj.textAny("diff", "patch", "content")
+            val lines = diff.lines()
+            val added = (obj.longOrNull("addedLines")?.toInt() ?: obj.longOrNull("added_lines")?.toInt())
+                ?: lines.count { it.startsWith("+") && !it.startsWith("+++") }
+            val removed = (obj.longOrNull("removedLines")?.toInt() ?: obj.longOrNull("removed_lines")?.toInt())
+                ?: lines.count { it.startsWith("-") && !it.startsWith("---") }
+            WorkspaceFileDiff(
+                path = path,
+                status = obj.textAny("status", "kind").ifBlank { "modified" },
+                diff = diff,
+                addedLines = added,
+                removedLines = removed,
+            )
+        }
+    }
+
+    fun collaboration(origin: HostOrigin, token: String, operation: String, input: Map<String, Any?>): JsonValue {
+        val body = encodeObject(
+            mapOf(
+                "operation_id" to UUID.randomUUID().toString(),
+                "input" to input,
+            ),
+        )
+        val response = request(origin, token, "POST", "/api/v1/collaboration/$operation", body)
+        val root = JsonValue.parse(response) as? JsonValue.Object ?: return JsonValue.Null
+        return root.value["data"] ?: root
+    }
+
+    fun listCollaborationThreads(
+        origin: HostOrigin,
+        token: String,
+        workspaceId: String,
+    ): List<CollaborationThreadSummary> {
+        val results = mutableListOf<CollaborationThreadSummary>()
+        val seenIds = mutableSetOf<String>()
+        if (workspaceId.isNotBlank()) {
+            runCatching {
+                collaboration(origin, token, "thread.listSidebar", mapOf("workspaceId" to workspaceId))
+            }.getOrNull()?.let { root ->
+                val arr = root.asArray()?.value ?: root.asObject()?.arrOrNull("items", "threads").orEmpty()
+                arr.forEach { item ->
+                    val obj = item.asObject() ?: return@forEach
+                    val id = obj.textAny("threadId", "thread_id", "spaceId", "space_id", "id")
+                    if (id.isBlank() || !seenIds.add(id)) return@forEach
+                    val kind = obj.textAny("kind").ifBlank { if (id.startsWith("direct:")) "dm" else "group" }
+                    val name = obj.textAny("name", "title", "displayName").ifBlank { "协作会话" }
+                    val preview = obj.textAny("lastMessagePreview", "last_message_preview", "preview", "description", "summary")
+                    results += CollaborationThreadSummary(
+                        id = id,
+                        kind = kind,
+                        name = name,
+                        subtitle = preview.ifBlank { if (kind == "dm") "私聊助手" else "协作群组" },
+                        agentId = obj.textAny("agentId", "agent_id"),
+                        memberId = obj.textAny("memberId", "member_id").ifBlank { id.removePrefix("direct:") },
+                        unreadCount = (obj.longOrNull("unreadCount") ?: obj.longOrNull("unread_count") ?: 0L).toInt(),
+                        updatedAt = obj.textAny("updatedAt", "updated_at", "lastMessageAt"),
+                    )
+                }
+            }
+            runCatching {
+                collaboration(origin, token, "member.list", mapOf("workspaceId" to workspaceId))
+            }.getOrNull()?.let { root ->
+                val arr = root.asArray()?.value ?: root.asObject()?.arrOrNull("members", "items").orEmpty()
+                arr.forEach { item ->
+                    val obj = item.asObject() ?: return@forEach
+                    val memberId = obj.textAny("id", "memberId", "member_id")
+                    if (memberId.isBlank()) return@forEach
+                    val threadId = "direct:$memberId"
+                    if (!seenIds.add(threadId)) return@forEach
+                    results += CollaborationThreadSummary(
+                        id = threadId,
+                        kind = "dm",
+                        name = obj.textAny("name", "displayName").ifBlank { "助手" },
+                        subtitle = obj.textAny("description", "summary", "roleName").ifBlank { "一对一私聊助手" },
+                        agentId = obj.textAny("agentId", "agent_id"),
+                        memberId = memberId,
+                    )
+                }
+            }
+        }
+        return results
+    }
+
+    fun listCollaborationMessages(
+        origin: HostOrigin,
+        token: String,
+        threadId: String,
+    ): List<CollaborationMessageItem> {
+        val raw = runCatching {
+            collaboration(
+                origin,
+                token,
+                "space.listMessages",
+                mapOf(
+                    "spaceId" to threadId,
+                    "latest" to true,
+                    "limit" to 120.0,
+                ),
+            )
+        }.getOrNull() ?: return emptyList()
+        val arr = raw.asArray()?.value ?: raw.asObject()?.arrOrNull("messages", "items").orEmpty()
+        return arr.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val content = obj.textAny("content", "text", "body")
+            if (content.isBlank()) return@mapNotNull null
+            val senderKind = obj.textAny("senderKind", "sender_kind", "role").ifBlank { "user" }
+            val senderName = obj.textAny("senderName", "sender_name", "authorName", "memberName")
+                .ifBlank { if (senderKind == "user") "我" else "助手" }
+            val receipts = obj.arrOrNull("receipts", "deliveries").orEmpty().mapNotNull { r ->
+                val ro = r.asObject() ?: return@mapNotNull null
+                val target = ro.textAny("memberName", "member_name", "name", "memberId")
+                val status = ro.textAny("status")
+                if (status.isBlank()) null else if (target.isNotBlank()) "$target:$status" else status
+            }
+            CollaborationMessageItem(
+                id = obj.textAny("id", "messageId", "message_id").ifBlank { UUID.randomUUID().toString() },
+                seq = obj.longOrNull("seq") ?: obj.longOrNull("sequence") ?: 0L,
+                senderName = senderName,
+                senderKind = senderKind,
+                agentId = obj.textAny("agentId", "agent_id"),
+                content = content,
+                createdAt = obj.textAny("createdAt", "created_at"),
+                receipts = receipts,
+            )
+        }
+    }
+
+    fun submitCollaborationMessage(
+        origin: HostOrigin,
+        token: String,
+        threadId: String,
+        content: String,
+    ) {
+        collaboration(
+            origin,
+            token,
+            "space.submit",
+            mapOf(
+                "spaceId" to threadId,
+                "content" to content,
+                "operationId" to UUID.randomUUID().toString(),
+            ),
+        )
+    }
+
+    fun createCollaborationGroup(
+        origin: HostOrigin,
+        token: String,
+        workspaceId: String,
+        name: String,
+    ) {
+        collaboration(
+            origin,
+            token,
+            "space.create",
+            mapOf(
+                "workspaceId" to workspaceId,
+                "name" to name,
+                "operationId" to UUID.randomUUID().toString(),
+            ),
+        )
+    }
+
+    fun createCollaborationBot(
+        origin: HostOrigin,
+        token: String,
+        workspaceId: String,
+        name: String,
+        agentId: String,
+        description: String,
+    ) {
+        collaboration(
+            origin,
+            token,
+            "member.create",
+            mapOf(
+                "workspaceId" to workspaceId,
+                "name" to name,
+                "agentId" to agentId,
+                "description" to description,
+                "operationId" to UUID.randomUUID().toString(),
+            ),
+        )
+    }
+
+    fun listSkillsCatalog(origin: HostOrigin, token: String): List<ExtensionCatalogItem> {
+        val raw = runCatching { call(origin, token, "scan_local_skills", emptyMap()) }.getOrNull()
+        val arr = raw?.asArray()?.value ?: raw?.asObject()?.arrOrNull("skills", "items").orEmpty()
+        return arr.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val name = obj.textAny("name", "title", "id")
+            if (name.isBlank()) return@mapNotNull null
+            ExtensionCatalogItem(
+                id = obj.textAny("id", "path", "name").ifBlank { name },
+                name = name,
+                summary = obj.textAny("description", "summary", "path"),
+                kind = obj.textAny("scope", "source", "kind").ifBlank { "Skill" },
+                status = "已就绪",
+            )
+        }
+    }
+
+    fun listMcpCatalog(origin: HostOrigin, token: String): List<ExtensionCatalogItem> {
+        val raw = runCatching { call(origin, token, "mcp_scan_local", emptyMap()) }.getOrNull()
+        val arr = raw?.asArray()?.value ?: raw?.asObject()?.arrOrNull("servers", "items").orEmpty()
+        return arr.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val name = obj.textAny("name", "title", "id")
+            if (name.isBlank()) return@mapNotNull null
+            val enabled = obj.boolOrNull("enabled") != false
+            ExtensionCatalogItem(
+                id = obj.textAny("id", "name").ifBlank { name },
+                name = name,
+                summary = obj.textAny("command", "url", "description", "summary"),
+                kind = obj.textAny("transport", "kind").ifBlank { "MCP" },
+                status = if (enabled) "已启用" else "已禁用",
+            )
+        }
+    }
+
+    fun listPluginCatalog(origin: HostOrigin, token: String): List<ExtensionCatalogItem> {
+        val raw = runCatching { call(origin, token, "plugin_control_catalog", emptyMap()) }.getOrNull()
+        val arr = raw?.asArray()?.value ?: raw?.asObject()?.arrOrNull("plugins", "items", "installed").orEmpty()
+        return arr.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val name = obj.textAny("name", "displayName", "title", "id")
+            if (name.isBlank()) return@mapNotNull null
+            val active = obj.boolOrNull("enabled") == true || obj.boolOrNull("active") == true
+            ExtensionCatalogItem(
+                id = obj.textAny("id", "pluginId", "name").ifBlank { name },
+                name = name,
+                summary = obj.textAny("summary", "description", "version"),
+                kind = obj.textAny("publisher", "category").ifBlank { "Plugin" },
+                status = if (active) "已启用" else "已安装",
+            )
+        }
+    }
+
+    fun listSubagentRoles(origin: HostOrigin, token: String, workspaceId: String): List<SubagentRoleItem> {
+        val teamsById = mutableMapOf<String, String>()
+        if (workspaceId.isNotBlank()) {
+            runCatching {
+                collaboration(origin, token, "team.list", mapOf("workspaceId" to workspaceId))
+            }.getOrNull()?.let { root ->
+                val arr = root.asArray()?.value ?: root.asObject()?.arrOrNull("teams", "items").orEmpty()
+                arr.forEach { item ->
+                    val obj = item.asObject() ?: return@forEach
+                    val id = obj.textAny("id", "teamId")
+                    val name = obj.textAny("name", "title")
+                    if (id.isNotBlank() && name.isNotBlank()) teamsById[id] = name
+                }
+            }
+        }
+        val roles = mutableListOf<SubagentRoleItem>()
+        if (workspaceId.isNotBlank()) {
+            runCatching {
+                collaboration(origin, token, "role.list", mapOf("workspaceId" to workspaceId))
+            }.getOrNull()?.let { root ->
+                val arr = root.asArray()?.value ?: root.asObject()?.arrOrNull("roles", "items").orEmpty()
+                arr.forEach { item ->
+                    val obj = item.asObject() ?: return@forEach
+                    val id = obj.textAny("id", "roleId", "name")
+                    val name = obj.textAny("name", "title")
+                    if (name.isBlank()) return@forEach
+                    val teamId = obj.textAny("teamId", "team_id")
+                    roles += SubagentRoleItem(
+                        id = id.ifBlank { name },
+                        name = name,
+                        teamId = teamId,
+                        teamName = obj.textAny("teamName", "team_name").ifBlank { teamsById[teamId] ?: "默认团队" },
+                        summary = obj.textAny("description", "summary", "prompt"),
+                        agentId = obj.textAny("agentId", "agent_id").ifBlank { "claude_code" },
+                        isBuiltin = false,
+                    )
+                }
+            }
+        }
+        if (roles.isNotEmpty()) return roles
+        return listOf(
+            SubagentRoleItem("architect", "系统架构师", "core", "核心研发组", "负责模块边界设计、ADR 评审与重构拆解", "claude_code", true),
+            SubagentRoleItem("fullstack", "全栈工程师", "core", "核心研发组", "负责 Rust 后端、Tauri IPC 与前端功能端到端实现", "codex", true),
+            SubagentRoleItem("reviewer", "代码审查员", "qa", "质量保障组", "执行规范与规格双轴审查，拦截回归与架构违规", "claude_code", true),
+            SubagentRoleItem("debugger", "故障诊断专家", "qa", "质量保障组", "定位复杂缺陷、并发竞态与性能退化根因", "codex", true),
+        )
+    }
+
     fun call(origin: HostOrigin, token: String, command: String, args: Map<String, Any?>): JsonValue {
         val operationId = UUID.randomUUID().toString()
         val body = encodeObject(
@@ -508,6 +859,9 @@ class HostApi(
 
 class HostApiException(val status: Int, message: String) : RuntimeException(message)
 class AuthRequiredException : RuntimeException("需要重新配对")
+
+private fun JsonValue.Object.arrOrNull(vararg keys: String): List<JsonValue>? =
+    keys.firstNotNullOfOrNull { arrOrNull(it) }
 
 private fun parseJsonOptions(obj: JsonValue.Object, vararg keys: String): List<SessionConfigOption> {
     keys.forEach { key ->
