@@ -26,12 +26,18 @@ import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Send
 import androidx.compose.material.icons.outlined.Groups
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ExpandMore
+import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.PersonAdd
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SmartToy
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
@@ -47,14 +53,18 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.vibex.companion.CollaborationMessageItem
 import dev.vibex.companion.CollaborationThreadSummary
 import dev.vibex.companion.app.CompanionModel
+import dev.vibex.companion.app.Route
+import dev.vibex.companion.app.SettingsSection
 import dev.vibex.companion.app.UiState
 import dev.vibex.companion.app.ui.theme.PlexMono
 import dev.vibex.companion.app.ui.theme.VibexTheme
@@ -70,11 +80,15 @@ fun CollaborationScreen(state: UiState, model: CompanionModel) {
         return
     }
     val colors = VibexTheme.colors
-    val host = state.profiles.find { it.hostId == state.selectedHostId }
     var search by rememberSaveable { mutableStateOf("") }
     var filter by rememberSaveable { mutableStateOf("all") }
     var showCreateGroup by remember { mutableStateOf(false) }
     var showCreateBot by remember { mutableStateOf(false) }
+    var showPlusMenu by remember { mutableStateOf(false) }
+    var showProjectMenu by remember { mutableStateOf(false) }
+
+    val projects = state.catalog?.projects.orEmpty()
+    val currentProject = projects.find { it.id == state.selectedProjectId } ?: projects.firstOrNull()
 
     val threads = state.collaborationThreads.filter { item ->
         val matchesKind = when (filter) {
@@ -88,65 +102,127 @@ fun CollaborationScreen(state: UiState, model: CompanionModel) {
         matchesKind && matchesQuery
     }
 
-    Column(Modifier.fillMaxSize()) {
-        ScreenHeader("协作空间") { ConnectionChip(state.connection, host?.name) }
+    Column(Modifier.fillMaxSize().background(colors.bg)) {
+        // iOS Inline Top Bar: Project Pill | 协作空间 | + Menu
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Box(Modifier.align(Alignment.CenterStart)) {
+                Row(
+                    Modifier
+                        .clip(CircleShape)
+                        .background(colors.bgElevated)
+                        .clickable { showProjectMenu = true }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Rounded.Folder, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+                    Text(
+                        currentProject?.name ?: "选择项目",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                    )
+                    Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                }
+                DropdownMenu(expanded = showProjectMenu, onDismissRequest = { showProjectMenu = false }) {
+                    projects.forEach { proj ->
+                        DropdownMenuItem(
+                            text = { Text(proj.name) },
+                            trailingIcon = if (proj.id == state.selectedProjectId) {
+                                { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                            } else null,
+                            onClick = {
+                                showProjectMenu = false
+                                model.selectProject(proj.id)
+                            },
+                        )
+                    }
+                }
+            }
+            Text(
+                "协作空间",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.textPrimary,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            Box(Modifier.align(Alignment.CenterEnd)) {
+                Icon(
+                    Icons.Rounded.Add,
+                    contentDescription = "新建",
+                    tint = colors.accent,
+                    modifier = Modifier
+                        .size(24.dp)
+                        .clickable { showPlusMenu = true },
+                )
+                DropdownMenu(expanded = showPlusMenu, onDismissRequest = { showPlusMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("新建助手") },
+                        leadingIcon = { Icon(Icons.Rounded.PersonAdd, null) },
+                        onClick = {
+                            showPlusMenu = false
+                            showCreateBot = true
+                        },
+                    )
+                    DropdownMenuItem(
+                        text = { Text("新建群组") },
+                        leadingIcon = { Icon(Icons.Rounded.Groups, null) },
+                        onClick = {
+                            showPlusMenu = false
+                            showCreateGroup = true
+                        },
+                    )
+                    HorizontalDivider()
+                    DropdownMenuItem(
+                        text = { Text("角色与团队管理") },
+                        leadingIcon = { Icon(Icons.Rounded.SmartToy, null) },
+                        onClick = {
+                            showPlusMenu = false
+                            model.go(Route.Settings(SettingsSection.Extensions))
+                        },
+                    )
+                }
+            }
+        }
+
         Column(
             Modifier.padding(horizontal = 16.dp, vertical = 6.dp),
             verticalArrangement = Arrangement.spacedBy(10.dp),
         ) {
-            SearchField(search, { search = it }, "搜索私聊助手或协作群组")
+            SearchField(search, { search = it }, "搜索群组或助手…")
+            // iOS 3-segment Picker: 全部 | 群组 | 助手
             Row(
-                Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(9.dp))
+                    .background(colors.bgElevated.copy(0.6f))
+                    .padding(3.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf("all" to "全部", "dm" to "私聊助手", "group" to "群组").forEach { (id, label) ->
-                        val selected = filter == id
-                        Text(
-                            label,
-                            fontSize = 12.sp,
-                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                            color = if (selected) colors.onAccent else colors.textSecondary,
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(50))
-                                .background(if (selected) colors.accent else colors.bgElevated)
-                                .border(0.75.dp, if (selected) colors.accent else colors.stroke, RoundedCornerShape(50))
-                                .clickable { filter = id }
-                                .padding(horizontal = 12.dp, vertical = 6.dp),
-                        )
-                    }
-                }
-                if (state.connection.allowsWrites) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                        PressSurface(onClick = { showCreateBot = true }, radius = 10.dp) {
-                            Row(
-                                Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(colors.bgElevated)
-                                    .border(0.75.dp, colors.stroke, RoundedCornerShape(10.dp))
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(Icons.Rounded.PersonAdd, null, tint = colors.accent, modifier = Modifier.size(14.dp))
-                                Text("助手", fontSize = 12.sp, color = colors.textPrimary)
-                            }
-                        }
-                        PressSurface(onClick = { showCreateGroup = true }, radius = 10.dp) {
-                            Row(
-                                Modifier
-                                    .clip(RoundedCornerShape(10.dp))
-                                    .background(colors.accent)
-                                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(Icons.Rounded.Add, null, tint = colors.onAccent, modifier = Modifier.size(14.dp))
-                                Text("群组", fontSize = 12.sp, color = colors.onAccent)
-                            }
-                        }
-                    }
+                listOf("all" to "全部", "group" to "群组", "dm" to "助手").forEach { (id, label) ->
+                    val selected = filter == id
+                    Text(
+                        label,
+                        fontSize = 13.sp,
+                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                        color = colors.textPrimary,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier
+                            .weight(1f)
+                            .then(
+                                if (selected) Modifier.shadow(2.dp, RoundedCornerShape(7.dp), ambientColor = Color.Black.copy(0.08f))
+                                else Modifier,
+                            )
+                            .clip(RoundedCornerShape(7.dp))
+                            .background(if (selected) colors.card else Color.Transparent)
+                            .clickable { filter = id }
+                            .padding(vertical = 6.dp),
+                    )
                 }
             }
         }

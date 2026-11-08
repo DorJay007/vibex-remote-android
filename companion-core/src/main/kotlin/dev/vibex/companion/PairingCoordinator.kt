@@ -12,6 +12,7 @@ class PairingCoordinator(
 ) {
     fun redeemInvitation(invitation: PairingInvitation, deviceName: String): PairingResult {
         val tried = mutableListOf<String>()
+        var primaryError: Exception? = null
         var lastError: Exception? = null
         for (origin in OriginOrder.probeOrder(invitation.reachability, null)) {
             tried += origin.value
@@ -21,9 +22,12 @@ class PairingCoordinator(
                     ?: "host:${origin.value}"
                 return PairingResult(hostId, session, tried)
             } catch (error: Exception) {
+                if (primaryError == null && !origin.value.contains("[fd", ignoreCase = true)) {
+                    primaryError = error
+                }
                 lastError = error
             }
         }
-        throw lastError ?: PairingException("无法到达 Host")
+        throw primaryError ?: lastError ?: PairingException("无法到达 Host")
     }
 }

@@ -69,7 +69,7 @@ data class UiState(
     val pairing: Boolean = false,
     val monitor: Boolean = false,
     val appearance: Appearance = Appearance.System,
-    val accent: AccentChoice = AccentChoice.Ink,
+    val accent: AccentChoice = AccentChoice.Blue,
     val streamDisplay: StreamDisplayPrefs = StreamDisplayPrefs(),
     val hostVersion: String = "",
     val hostProtocol: String = "",
@@ -89,7 +89,7 @@ data class UiState(
     val route: Route = Route.Conversations,
 )
 
-enum class SettingsSection { Connection, Extensions, Appearance, Stream, Host, Capabilities, About }
+enum class SettingsSection { Profile, Connection, Extensions, Appearance, Font, Notification, Stream, Host, Capabilities, About }
 
 sealed class Route {
     data object Onboarding : Route()
@@ -127,9 +127,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             selectedHostId = selectedHostId,
             selectedProjectId = selected?.selectedProjectId,
             appearance = stored.appearance,
-            accent = stored.accent,
+            accent = if (stored.accent == AccentChoice.Ink) AccentChoice.Blue else stored.accent,
             streamDisplay = stored.streamDisplay,
-            route = if (stored.profiles.isEmpty()) Route.Onboarding else Route.Folders,
+            route = Route.Conversations,
             connection = if (stored.profiles.isEmpty()) ConnectionState.Offline else ConnectionState.Connecting,
         )
         if (stored.profiles.isNotEmpty()) {
@@ -759,7 +759,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             }).distinctBy { it.origin }
             val updated = existing.copy(reachability = merged)
             upsertProfile(updated, selected = true)
-            _state.update { it.copy(notice = "已更新地址", route = Route.Folders) }
+            _state.update { it.copy(notice = "已更新地址", route = Route.Conversations) }
             connect(updated)
             return
         }
@@ -767,9 +767,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             pairing.redeemInvitation(invitation, Build.MODEL)
         }
         credentials.put(result.hostId, result.session.credential.access_token)
+        val displayHost = result.session.origin.value
+            .removePrefix("http://")
+            .removePrefix("https://")
+            .substringBefore(":")
         val profile = HostProfile(
             hostId = result.hostId,
-            name = "VibeX Host",
+            name = "VibeX ($displayHost)",
             deviceId = result.session.credential.device_id,
             reachability = invitation.reachability.map { StoredReachability(it.origin.value, it.kind) }
                 .ifEmpty { listOf(StoredReachability(result.session.origin.value, "paired")) },
@@ -778,7 +782,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             selectedProjectId = null,
         )
         upsertProfile(profile, selected = true)
-        _state.update { it.copy(notice = null, route = Route.Folders, triedOrigins = result.tried) }
+        _state.update { it.copy(notice = null, route = Route.Conversations, triedOrigins = result.tried) }
         connect(profile)
     }
 

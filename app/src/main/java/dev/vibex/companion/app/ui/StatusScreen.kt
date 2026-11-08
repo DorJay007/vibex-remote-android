@@ -21,12 +21,17 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.SpaceDashboard
+import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.NotificationsActive
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
@@ -34,6 +39,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
@@ -74,35 +80,99 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
     val colors = VibexTheme.colors
     var mode by rememberSaveable { mutableStateOf("kanban") }
     var collapsed by rememberSaveable { mutableStateOf(setOf<String>()) }
-    val host = state.profiles.find { it.hostId == state.selectedHostId }
-    Column(Modifier.fillMaxSize()) {
-        ScreenHeader("看板") { ConnectionChip(state.connection, host?.name) }
+    var showProjectMenu by remember { mutableStateOf(false) }
+    var showCreate by remember { mutableStateOf(false) }
+    val projects = state.catalog?.projects.orEmpty()
+    val currentProject = projects.find { it.id == state.selectedProjectId }
+
+    Column(Modifier.fillMaxSize().background(colors.bg)) {
+        // iOS Inline Top Bar: Project Pill | 看板 | + Button
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+        ) {
+            Box(Modifier.align(Alignment.CenterStart)) {
+                Row(
+                    Modifier
+                        .clip(CircleShape)
+                        .background(colors.bgElevated)
+                        .clickable { showProjectMenu = true }
+                        .padding(horizontal = 10.dp, vertical = 5.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Icon(Icons.Rounded.Folder, null, tint = colors.accent, modifier = Modifier.size(14.dp))
+                    Text(
+                        currentProject?.name ?: "全部项目",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                    )
+                    Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                }
+                DropdownMenu(expanded = showProjectMenu, onDismissRequest = { showProjectMenu = false }) {
+                    projects.forEach { proj ->
+                        DropdownMenuItem(
+                            text = { Text(proj.name) },
+                            trailingIcon = if (proj.id == state.selectedProjectId) {
+                                { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                            } else null,
+                            onClick = {
+                                showProjectMenu = false
+                                model.selectProject(proj.id)
+                            },
+                        )
+                    }
+                }
+            }
+            Text(
+                "看板",
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.textPrimary,
+                modifier = Modifier.align(Alignment.Center),
+            )
+            Icon(
+                Icons.Rounded.AddCircle,
+                contentDescription = "新建会话",
+                tint = colors.accent,
+                modifier = Modifier
+                    .align(Alignment.CenterEnd)
+                    .size(24.dp)
+                    .clickable {
+                        model.loadCatalog()
+                        showCreate = true
+                    },
+            )
+        }
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 6.dp)
-                .clip(RoundedCornerShape(12.dp))
-                .background(colors.bgElevated)
-                .border(0.75.dp, colors.stroke, RoundedCornerShape(12.dp))
-                .padding(4.dp),
-            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                .padding(horizontal = 16.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
         ) {
             boardModes.forEach { (id, label) ->
                 val selected = mode == id
                 Text(
                     label,
-                    fontSize = 12.sp,
-                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = if (selected) colors.onAccent else colors.textSecondary,
+                    fontSize = 12.5.sp,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) Color.White else colors.textPrimary,
                     modifier = Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(9.dp))
-                        .background(if (selected) colors.accent else Color.Transparent)
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(if (selected) colors.accent else colors.bgElevated)
                         .clickable { mode = id }
-                        .padding(vertical = 7.dp),
+                        .padding(vertical = 8.dp),
                     textAlign = androidx.compose.ui.text.style.TextAlign.Center,
                 )
             }
+        }
+        HorizontalDivider(color = colors.hairline)
+        if (showCreate) {
+            NewConversationSheet(state, model) { showCreate = false }
         }
         when {
             state.selectedProjectId == null && state.conversations.isEmpty() -> EmptyState(

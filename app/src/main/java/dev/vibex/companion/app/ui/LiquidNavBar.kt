@@ -45,56 +45,54 @@ data class LiquidTab(
 @Composable
 fun LiquidNavBar(tabs: List<LiquidTab>, modifier: Modifier = Modifier) {
     val colors = VibexTheme.colors
-    val shape = RoundedCornerShape(34.dp)
-    val fill = if (colors.isDark) Color(0xCC1A2029) else Color(0xD6FFFFFF)
-    val highlight = if (colors.isDark) Color.White.copy(0.20f) else Color.White.copy(0.86f)
-    Row(
+    Column(
         modifier
-            .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 10.dp)
             .fillMaxWidth()
-            .height(68.dp)
-            .shadow(20.dp, shape, ambientColor = Color.Black.copy(0.16f), spotColor = Color.Black.copy(0.10f))
-            .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        if (colors.isDark) Color.White.copy(0.14f) else Color.White.copy(0.92f),
-                        fill,
-                    ),
-                ),
-            )
-            .border(0.75.dp, highlight, shape)
-            .padding(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .background(colors.bgElevated)
+            .navigationBarsPadding(),
     ) {
-        tabs.forEach { tab ->
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(if (tab.selected) colors.accent.copy(if (colors.isDark) 0.22f else 0.14f) else Color.Transparent)
-                    .semantics {
-                        contentDescription = tab.label
-                        role = Role.Tab
-                        selected = tab.selected
-                    }
-                    .clickable(onClick = tab.onClick),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(
-                    if (tab.selected) tab.selectedIcon else tab.icon,
-                    contentDescription = null,
-                    tint = if (tab.selected) colors.accent else colors.textTertiary,
-                    modifier = Modifier.size(22.dp),
-                )
-                Text(
-                    tab.label,
-                    color = if (tab.selected) colors.accent else colors.textTertiary,
-                    fontSize = 11.sp,
-                )
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(colors.hairline),
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            tabs.forEach { tab ->
+                val tint = if (tab.selected) colors.accent else colors.textSecondary
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .semantics {
+                            contentDescription = tab.label
+                            role = Role.Tab
+                            selected = tab.selected
+                        }
+                        .clickable(onClick = tab.onClick)
+                        .padding(top = 6.dp, bottom = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
+                ) {
+                    Icon(
+                        if (tab.selected) tab.selectedIcon else tab.icon,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(21.dp),
+                    )
+                    Text(
+                        tab.label,
+                        color = tint,
+                        fontSize = 10.5.sp,
+                        fontWeight = if (tab.selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Medium,
+                    )
+                }
             }
         }
     }

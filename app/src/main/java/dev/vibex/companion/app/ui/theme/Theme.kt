@@ -14,7 +14,7 @@ import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
 @Composable
-fun CompanionTheme(appearance: Appearance = Appearance.System, accent: AccentChoice = AccentChoice.Ink, content: @Composable () -> Unit) {
+fun CompanionTheme(appearance: Appearance = Appearance.System, accent: AccentChoice = AccentChoice.Blue, content: @Composable () -> Unit) {
     val dark = when (appearance) {
         Appearance.Dark -> true
         Appearance.Light -> false
