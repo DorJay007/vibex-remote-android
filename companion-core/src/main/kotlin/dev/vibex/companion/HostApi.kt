@@ -479,6 +479,45 @@ class HostApi(
         }
     }
 
+    /**
+     * Fetches the JSONL transcript rows via `conversation_timeline_page` (ADR-0082).
+     * Assistant text, thinking, tool calls, and plans live in the JSONL transcript
+     * rather than `conversation_events`.
+     */
+    fun timelineRows(origin: HostOrigin, token: String, conversationId: String): List<JsonValue> {
+        val allRows = mutableListOf<JsonValue>()
+        var cursor: String? = null
+        for (pageIdx in 0 until 20) {
+            val args = linkedMapOf<String, Any?>(
+                "conversationId" to conversationId,
+                "limit" to 200.0,
+            )
+            if (!cursor.isNullOrBlank()) {
+                args["cursor"] = cursor
+            }
+            val data = runCatching {
+                call(origin, token, "conversation_timeline_page", args)
+            }.getOrNull()?.asObject() ?: break
+            val rows = data.arrOrNull("rows").orEmpty()
+            allRows.addAll(rows)
+            val next = data.textOrNull("next_cursor")?.takeIf { it.isNotBlank() }
+                ?: data.textOrNull("nextCursor")?.takeIf { it.isNotBlank() }
+            if (next == null || next == cursor) break
+            cursor = next
+        }
+        return allRows
+    }
+
+    fun ensureSessionControls(origin: HostOrigin, token: String, conversationId: String): JsonValue? =
+        runCatching {
+            call(
+                origin,
+                token,
+                "conversation_ensure_session_controls",
+                mapOf("conversationId" to conversationId),
+            )
+        }.getOrNull()
+
     fun notificationSummary(origin: HostOrigin, token: String, conversationId: String): String? {
         val body = runCatching {
             request(

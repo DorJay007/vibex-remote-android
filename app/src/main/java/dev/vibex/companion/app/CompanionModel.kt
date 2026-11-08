@@ -114,6 +114,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val sessions = mutableMapOf<String, TimelineSession>()
     private val subscriptions = mutableMapOf<String, String>()
     private var pingJob: Job? = null
+    private var timelinePollJob: Job? = null
+    @Volatile
+    private var boostPollingUntil: Long = 0L
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -271,6 +274,28 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     fun openConversation(id: String) {
         _state.update { it.copy(route = Route.Timeline(id), timeline = sessions[id]?.snapshot()) }
         viewModelScope.launch { attachConversation(id) }
+        startTimelinePoller(id)
+    }
+
+    private fun startTimelinePoller(id: String) {
+        timelinePollJob?.cancel()
+        timelinePollJob = viewModelScope.launch {
+            delay(350)
+            while (isActive && (_state.value.route as? Route.Timeline)?.conversationId == id) {
+                runCatching { syncConversationTimeline(id) }
+                val session = sessions[id]
+                val fast = session?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil
+                if (fast) {
+                    delay(250)
+                } else {
+                    for (step in 0 until 5) {
+                        if (!isActive || (_state.value.route as? Route.Timeline)?.conversationId != id) break
+                        if (sessions[id]?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil) break
+                        delay(240)
+                    }
+                }
+            }
+        }
     }
 
     fun refreshConversations() {
@@ -290,11 +315,25 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         if (!_state.value.connection.allowsWrites) return
         viewModelScope.launch {
             runCatching {
+                val resolvedWorkspaceId = workspaceId.ifBlank { currentCollaborationWorkspaceId() }
+                if (resolvedWorkspaceId.isBlank()) error("当前没有可用项目工作区，请先在桌面端导入项目")
+                val resolvedAgentId = agentId.ifBlank {
+                    _state.value.catalog?.agents?.firstOrNull { it.usable }?.id
+                        ?: _state.value.catalog?.agents?.firstOrNull()?.id
+                        ?: "claude_code"
+                }
                 val (origin, token) = live()
                 val created = withContext(Dispatchers.IO) {
-                    api.createConversation(origin, token, workspaceId, agentId, title.ifBlank { null }, prompt.ifBlank { null })
+                    api.createConversation(
+                        origin,
+                        token,
+                        resolvedWorkspaceId,
+                        resolvedAgentId,
+                        title.ifBlank { null },
+                        prompt.ifBlank { null },
+                    )
                 }
-                val agent = _state.value.catalog?.agents?.find { it.id == agentId }
+                val agent = _state.value.catalog?.agents?.find { it.id == resolvedAgentId }
                 withContext(Dispatchers.IO) {
                     if (!modeId.isNullOrBlank() && modeId != agent?.currentModeId) {
                         runCatching { api.setSessionMode(origin, token, created.id, modeId) }.onFailure { fail(it) }
@@ -306,17 +345,18 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 }
-                val boundAgent = created.agentId.ifBlank { agentId }
+                val boundAgent = created.agentId.ifBlank { resolvedAgentId }
+                val boundWorkspace = created.workspaceId.ifBlank { resolvedWorkspaceId }
                 val session = sessions.getOrPut(created.id) {
                     TimelineSession().also { createdSession ->
                         createdSession.conversationId = created.id
                         createdSession.title = title.ifBlank { created.title }
                         createdSession.agentId = boundAgent
-                        createdSession.workspaceId = workspaceId
+                        createdSession.workspaceId = boundWorkspace
                     }
                 }.apply {
                     this.agentId = boundAgent
-                    this.workspaceId = workspaceId.ifBlank { this.workspaceId }
+                    this.workspaceId = boundWorkspace
                     if (title.isNotBlank()) this.title = title
                 }
                 val bound = _state.value.catalog?.agents?.find { it.id == boundAgent } ?: agent
@@ -328,7 +368,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     selected = config,
                 )
                 val summary = created.copy(
-                    workspaceId = created.workspaceId.ifBlank { workspaceId },
+                    workspaceId = boundWorkspace,
                     title = title.ifBlank { created.title },
                     agentId = boundAgent,
                 )
@@ -337,8 +377,11 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                         conversations = listOf(summary) + state.conversations.filterNot { it.id == summary.id },
                     )
                 }
-                loadConversations()
                 openConversation(created.id)
+                if (prompt.isNotBlank()) {
+                    send(created.id, prompt)
+                }
+                viewModelScope.launch { runCatching { loadConversations() } }
             }.onFailure { fail(it) }
         }
     }
@@ -474,9 +517,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching {
                 val agentId = session.agentId.ifBlank { summary?.agentId.orEmpty() }
-                if (agentId.isBlank()) error("会话还没有 Agent")
+                    .ifBlank {
+                        _state.value.catalog?.agents?.firstOrNull { it.usable }?.id
+                            ?: _state.value.catalog?.agents?.firstOrNull()?.id
+                            ?: "claude_code"
+                    }
+                session.agentId = agentId
                 val workspaceId = session.workspaceId.ifBlank { summary?.workspaceId.orEmpty() }
+                    .ifBlank { currentCollaborationWorkspaceId() }
                 if (workspaceId.isBlank()) error("会话还没有工作区")
+                session.workspaceId = workspaceId
+                boostPollingUntil = System.currentTimeMillis() + 30_000L
                 val (origin, token) = live()
                 val localId = "local:${System.currentTimeMillis()}"
                 if (session.inFlightTurnId == null) session.inFlightTurnId = "local"
@@ -491,10 +542,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 withContext(Dispatchers.IO) {
                     api.submitInput(origin, token, conversationId, agentId, workspaceId, text)
                 }
-                val events = withContext(Dispatchers.IO) {
-                    api.offlineEvents(origin, token, conversationId, session.lastSequence)
-                }
-                EventFold.applyAll(session, events)
+                syncConversationTimeline(conversationId)
                 if (session.rows.any { it.kind == "user" && it.id != localId && it.body == text }) {
                     session.rows.removeAll { it.id == localId }
                 }
@@ -541,6 +589,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         if (!_state.value.connection.allowsWrites) return
         viewModelScope.launch {
             runCatching {
+                boostPollingUntil = System.currentTimeMillis() + 30_000L
                 val (origin, token) = live()
                 withContext(Dispatchers.IO) {
                     when (item.kind) {
@@ -549,6 +598,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                         else -> api.respondQuestion(origin, token, item.conversationId, item.id, optionId)
                     }
                 }
+                syncConversationTimeline(item.conversationId)
             }.onFailure { fail(it) }
         }
     }
@@ -921,9 +971,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         subscriptions[subscriptionId] = id
         runCatching {
             val (origin, token) = live()
-            val events = withContext(Dispatchers.IO) { api.offlineEvents(origin, token, id, after) }
-            EventFold.applyAll(session, events)
-            offline.save(id, session.lastSequence, events)
+            syncConversationTimeline(id)
+            if (session.sessionModes.isEmpty() && session.sessionConfig.isEmpty()) {
+                val controls = withContext(Dispatchers.IO) {
+                    api.ensureSessionControls(origin, token, id)
+                }
+                EventFold.applySessionControls(session, controls)
+            }
             val skills = withContext(Dispatchers.IO) {
                 api.listSlashCommands(
                     origin,
@@ -936,6 +990,35 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             session.skillCommands += skills
             publishTimeline(session)
         }
+    }
+
+    private suspend fun syncConversationTimeline(id: String) {
+        val summary = _state.value.conversations.find { it.id == id }
+        val session = sessions.getOrPut(id) {
+            TimelineSession().also {
+                it.conversationId = id
+                it.title = summary?.title.orEmpty()
+                it.agentId = summary?.agentId.orEmpty()
+                it.workspaceId = summary?.workspaceId.orEmpty()
+            }
+        }
+        if (session.agentId.isBlank()) session.agentId = summary?.agentId.orEmpty()
+        if (session.workspaceId.isBlank()) session.workspaceId = summary?.workspaceId.orEmpty()
+        val (origin, token) = live()
+        val events = withContext(Dispatchers.IO) {
+            runCatching { api.offlineEvents(origin, token, id, session.lastSequence) }.getOrDefault(emptyList())
+        }
+        if (events.isNotEmpty()) {
+            EventFold.applyAll(session, events)
+            offline.save(id, session.lastSequence, events)
+        }
+        val rawRows = withContext(Dispatchers.IO) {
+            api.timelineRows(origin, token, id)
+        }
+        if (rawRows.isNotEmpty()) {
+            EventFold.applyTimelineRows(session, rawRows)
+        }
+        publishTimeline(session)
     }
 
     private suspend fun loadConversations() {

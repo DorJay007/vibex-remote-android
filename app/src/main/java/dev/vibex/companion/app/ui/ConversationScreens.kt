@@ -443,7 +443,9 @@ fun ConversationList(state: UiState, model: CompanionModel) {
 
                     Spacer(Modifier.weight(1f))
 
-                    val canSend = draft.trim().isNotEmpty() && state.connection.allowsWrites && currentWorkspace != null
+                    val resolvedWsId = currentWorkspace?.id?.ifBlank { null }
+                        ?: state.conversations.firstOrNull { it.workspaceId.isNotBlank() }?.workspaceId
+                    val canSend = draft.trim().isNotEmpty() && state.connection.allowsWrites && !resolvedWsId.isNullOrBlank()
                     Box(
                         Modifier
                             .size(32.dp)
@@ -451,7 +453,7 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                             .background(if (canSend) colors.accent else colors.textTertiary.copy(0.24f))
                             .clickable(enabled = canSend) {
                                 val text = draft.trim()
-                                val wsId = currentWorkspace?.id ?: return@clickable
+                                val wsId = resolvedWsId ?: return@clickable
                                 val agId = currentAgent?.id ?: "claude_code"
                                 draft = ""
                                 model.createConversation(
