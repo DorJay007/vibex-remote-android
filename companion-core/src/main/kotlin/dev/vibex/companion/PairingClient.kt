@@ -28,6 +28,9 @@ fun interface HttpTransport {
 
 class PairingException(message: String) : RuntimeException(message)
 
+class MobileDeviceConflictException(val existingDeviceName: String) :
+    RuntimeException("当前电脑已连接手机「$existingDeviceName」")
+
 data class CompanionSession(
     val origin: HostOrigin,
     val credential: DeviceCredential,
@@ -53,18 +56,35 @@ class PairingClient(
     private val transport: HttpTransport = UrlConnectionTransport(),
     private val protocolVersion: String = CLIENT_PROTOCOL_VERSION,
 ) {
+    private fun throwIfMobileConflict(status: Int, body: String) {
+        if (status != 409) return
+        val root = runCatching { JsonValue.parse(body) as? JsonValue.Object }.getOrNull() ?: return
+        val details = root.value["details"] as? JsonValue.Object ?: return
+        if (details.optionalText("reason") == "mobile_device_conflict") {
+            val existingName = details.optionalText("existing_device_name")
+                ?.takeIf { it.isNotBlank() }
+                ?: "另一台手机"
+            throw MobileDeviceConflictException(existingName)
+        }
+    }
+
     fun redeem(
         origin: HostOrigin,
         pairingToken: String,
         deviceName: String = "Android Companion",
+        replaceExistingMobile: Boolean = false,
     ): CompanionSession {
         require(pairingToken.isNotBlank()) { "Pairing token is required" }
         require(deviceName.isNotBlank()) { "Device name is required" }
 
-        val redeemBody = RedeemPairingRequest(
-            pairing_token = pairingToken.trim(),
-            device_name = deviceName.trim(),
-        ).encodeJson()
+        val redeemBody = JsonValue.Object(
+            linkedMapOf(
+                "pairing_token" to JsonValue.Text(pairingToken.trim()),
+                "device_name" to JsonValue.Text(deviceName.trim()),
+                "client_kind" to JsonValue.Text("mobile"),
+                "replace_existing_mobile" to JsonValue.Bool(replaceExistingMobile),
+            ),
+        ).encode()
         val redeem = transport.execute(
             "POST",
             origin.resolve("/api/v1/auth/pairings/redeem"),
@@ -75,6 +95,7 @@ class PairingClient(
             redeemBody,
         )
         if (redeem.status !in 200..299) {
+            throwIfMobileConflict(redeem.status, redeem.body)
             throw PairingException("Pairing redeem failed (${redeem.status})")
         }
         val credential = parseDeviceCredential(redeem.body)
@@ -111,10 +132,12 @@ class PairingClient(
         deviceName: String = "Android Companion",
         publicKeyEd25519: String? = null,
         sessionNonce: String? = null,
+        replaceExistingMobile: Boolean = false,
     ): DeviceConnectRequestResult {
         val fields = linkedMapOf<String, JsonValue>(
             "device_name" to JsonValue.Text(deviceName.trim().ifBlank { "Android Companion" }),
             "client_kind" to JsonValue.Text("mobile"),
+            "replace_existing_mobile" to JsonValue.Bool(replaceExistingMobile),
         )
         publicKeyEd25519?.trim()?.takeIf { it.isNotEmpty() }?.let {
             fields["public_key_ed25519"] = JsonValue.Text(it)
@@ -132,6 +155,7 @@ class PairingClient(
             JsonValue.Object(fields).encode(),
         )
         if (response.status !in 200..299) {
+            throwIfMobileConflict(response.status, response.body)
             throw PairingException("发起连接请求失败 (${response.status})")
         }
         return parseConnectRequestResult(response.body)
@@ -170,11 +194,12 @@ class PairingClient(
         const val CLIENT_PROTOCOL_VERSION = "1.0"
         const val PROTOCOL_HEADER = "x-vibex-protocol-version"
         const val DEFAULT_OFFICIAL_RELAY_PORT = 443
-        const val DEFAULT_OFFICIAL_RELAY_BASE = "https://vibex.xforever.xin"
+        val DEFAULT_OFFICIAL_RELAY_BASE: String =
+            System.getenv("VIBEX_RELAY_URL")?.trim()?.takeIf { it.isNotEmpty() } ?: ""
         const val HAPPY_EYEBALLS_LAN_WINDOW_MS = 250L
 
         private val rememberedRelayBases = java.util.concurrent.CopyOnWriteArraySet<String>(
-            listOf(DEFAULT_OFFICIAL_RELAY_BASE),
+            listOf(DEFAULT_OFFICIAL_RELAY_BASE).filter { it.isNotBlank() },
         )
 
         fun rememberRelayBase(originOrBaseUrl: String) {
@@ -223,8 +248,17 @@ class PairingClient(
                 connection.connectTimeout = timeoutMs
                 connection.readTimeout = timeoutMs
                 connection.requestMethod = "GET"
+                connection.setRequestProperty(
+                    E2eeSessionManager.HEADER_CLIENT_PUB,
+                    E2eeSessionManager.clientPublicKeyBase64,
+                )
                 val code = connection.responseCode
                 if (code !in 200..299) return null
+                E2eeSessionManager.ingestHandshake(
+                    origin.value,
+                    connection.getHeaderField(E2eeSessionManager.HEADER_SESSION),
+                    connection.getHeaderField(E2eeSessionManager.HEADER_SERVER_PUB),
+                )
                 val routedHostId = connection.getHeaderField("x-vibex-routed-host-id")?.trim()
                 if (!expectedHostId.isNullOrBlank() && !routedHostId.isNullOrBlank() && routedHostId != expectedHostId) {
                     return null
@@ -251,12 +285,20 @@ class PairingClient(
         fun discoverLanHosts(
             port: Int = 17891,
             extraRelayOrigins: Collection<String> = emptyList(),
+            includeCloudRelay: Boolean = false,
+            cloudOnly: Boolean = false,
         ): List<DiscoveredLanHost> {
+            if (cloudOnly) {
+                return discoverSameExitPublicHosts(extraRelayOrigins = extraRelayOrigins)
+            }
             val candidates = LinkedHashSet<String>()
             val localPorts = (listOf(port, 17899) + (17891..17899)).distinct()
             for (localPort in localPorts) {
                 candidates.add("http://127.0.0.1:$localPort")
                 candidates.add("http://10.0.2.2:$localPort")
+            }
+            for (lanOrigin in discoverSameExitLanOrigins(extraRelayOrigins = extraRelayOrigins)) {
+                candidates.add(lanOrigin)
             }
             val lanPorts = listOf(port, 17899).distinct()
 
@@ -317,7 +359,7 @@ class PairingClient(
             } finally {
                 pool.shutdownNow()
             }
-            if (localFound.isNotEmpty()) {
+            if (localFound.isNotEmpty() || !includeCloudRelay) {
                 return localFound
             }
             return discoverSameExitPublicHosts(extraRelayOrigins = extraRelayOrigins)
@@ -367,6 +409,76 @@ class PairingClient(
             if (bases.isEmpty()) return emptyList()
             val results = mutableListOf<DiscoveredLanHost>()
             for (base in bases) {
+                val cleanBase = base.trimEnd('/')
+                runCatching {
+                    val conn = URI("$cleanBase/v1/discover/same-net").toURL().openConnection() as HttpURLConnection
+                    conn.connectTimeout = timeoutMs
+                    conn.readTimeout = timeoutMs
+                    conn.requestMethod = "GET"
+                    if (conn.responseCode in 200..299) {
+                        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        val root = JsonValue.parse(body) as? JsonValue.Object
+                        val hosts = (root?.value?.get("hosts") as? JsonValue.Array)?.value.orEmpty()
+                        for (item in hosts) {
+                            val obj = item as? JsonValue.Object ?: continue
+                            val hostId = obj.optionalText("host_id") ?: continue
+                            val name = obj.optionalText("name") ?: "VibeX Desktop"
+                            val relayPath = obj.optionalText("relay_path") ?: "/t/$hostId"
+                            val relayOrigin = "$cleanBase$relayPath"
+                            results.add(
+                                DiscoveredLanHost(
+                                    origin = relayOrigin,
+                                    hostId = hostId,
+                                    name = name,
+                                ),
+                            )
+                        }
+                    }
+                }
+                runCatching {
+                    val conn = URI("$cleanBase/v1/beacon/vbx-cloud-hosts-v1").toURL().openConnection() as HttpURLConnection
+                    conn.connectTimeout = timeoutMs
+                    conn.readTimeout = timeoutMs
+                    conn.requestMethod = "GET"
+                    if (conn.responseCode in 200..299) {
+                        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
+                        val root = JsonValue.parse(body) as? JsonValue.Object
+                        val entries = (root?.value?.get("entries") as? JsonValue.Array)?.value.orEmpty()
+                        val seenIds = results.mapNotNull { it.hostId }.toMutableSet()
+                        for (item in entries.asReversed()) {
+                            val entryObj = item as? JsonValue.Object ?: continue
+                            val payload = entryObj.value["payload"] as? JsonValue.Object ?: continue
+                            val hostId = payload.optionalText("host_id")?.trim().orEmpty()
+                            if (hostId.isEmpty() || !seenIds.add(hostId)) continue
+                            val origin = payload.optionalText("origin")?.trim()?.takeIf { it.isNotEmpty() }
+                                ?: "$cleanBase/t/$hostId"
+                            val verified = probeHostHealth(origin, timeoutMs = 2000, expectedHostId = hostId)
+                            if (verified != null) {
+                                results.add(verified)
+                            }
+                        }
+                    }
+                }
+            }
+            for (extra in extraRelayOrigins) {
+                if (extra.contains("/t/") && results.none { it.origin == extra }) {
+                    val verified = probeHostHealth(extra, timeoutMs = 1800)
+                    if (verified != null) {
+                        results.add(verified)
+                    }
+                }
+            }
+            return results.distinctBy { it.hostId ?: it.origin }
+        }
+
+        private fun discoverSameExitLanOrigins(
+            extraRelayOrigins: Collection<String> = emptyList(),
+            timeoutMs: Int = 1200,
+        ): List<String> {
+            val bases = knownRelayBases(extraRelayOrigins)
+            if (bases.isEmpty()) return emptyList()
+            val origins = LinkedHashSet<String>()
+            for (base in bases) {
                 runCatching {
                     val cleanBase = base.trimEnd('/')
                     val conn = URI("$cleanBase/v1/discover/same-net").toURL().openConnection() as HttpURLConnection
@@ -379,21 +491,17 @@ class PairingClient(
                     val hosts = (root.value["hosts"] as? JsonValue.Array)?.value.orEmpty()
                     for (item in hosts) {
                         val obj = item as? JsonValue.Object ?: continue
-                        val hostId = obj.optionalText("host_id") ?: continue
-                        val name = obj.optionalText("name") ?: "VibeX Desktop"
-                        val relayPath = obj.optionalText("relay_path") ?: "/t/$hostId"
-                        val relayOrigin = "$cleanBase$relayPath"
-                        results.add(
-                            DiscoveredLanHost(
-                                origin = relayOrigin,
-                                hostId = hostId,
-                                name = name,
-                            ),
-                        )
+                        val lanList = (obj.value["lan_origins"] as? JsonValue.Array)?.value.orEmpty()
+                        for (lanItem in lanList) {
+                            val url = (lanItem as? JsonValue.Text)?.value?.trim().orEmpty()
+                            if (url.startsWith("http://", ignoreCase = true)) {
+                                origins.add(url)
+                            }
+                        }
                     }
                 }
             }
-            return results.distinctBy { it.hostId ?: it.origin }
+            return origins.toList()
         }
 
         private fun queryDomesticBeaconOrigins(
@@ -436,21 +544,105 @@ class UrlConnectionTransport : HttpTransport {
         headers: Map<String, String>,
         body: String?,
     ): HttpExchange {
+        val first = executeOnce(method, url, headers, body, allowBootstrap = true)
+        if (first.status == 412) {
+            return executeOnce(method, url, headers, body, allowBootstrap = false)
+        }
+        return first
+    }
+
+    private fun executeOnce(
+        method: String,
+        url: String,
+        headers: Map<String, String>,
+        body: String?,
+        allowBootstrap: Boolean,
+    ): HttpExchange {
+        val lower = url.lowercase()
+        val isPrivateLan = lower.startsWith("http://192.168.") ||
+            lower.startsWith("http://10.") ||
+            lower.startsWith("http://172.") ||
+            lower.startsWith("http://127.")
+
+        val originKey = E2eeSessionManager.originKey(url)
+        if (allowBootstrap && E2eeSessionManager.session(originKey) == null && !lower.endsWith("/health") && !lower.endsWith("/api/v1/e2ee/handshake")) {
+            runCatching {
+                val hsConn = URI("$originKey/api/v1/e2ee/handshake").toURL().openConnection() as HttpURLConnection
+                hsConn.connectTimeout = if (isPrivateLan) 900 else 3000
+                hsConn.readTimeout = if (isPrivateLan) 1500 else 3500
+                hsConn.requestMethod = "GET"
+                hsConn.setRequestProperty(E2eeSessionManager.HEADER_CLIENT_PUB, E2eeSessionManager.clientPublicKeyBase64)
+                hsConn.responseCode
+                E2eeSessionManager.ingestHandshake(
+                    originKey,
+                    hsConn.getHeaderField(E2eeSessionManager.HEADER_SESSION),
+                    hsConn.getHeaderField(E2eeSessionManager.HEADER_SERVER_PUB),
+                )
+            }
+        }
+
         val connection = URI(url).toURL().openConnection() as HttpURLConnection
-        connection.connectTimeout = 10_000
-        connection.readTimeout = 20_000
+        connection.connectTimeout = if (isPrivateLan) 2_200 else 10_000
+        connection.readTimeout = if (isPrivateLan) 4_000 else 20_000
         connection.requestMethod = method
         connection.doInput = true
-        headers.forEach { (key, value) -> connection.setRequestProperty(key, value) }
-        if (body != null) {
+        val mutableHeaders = LinkedHashMap(headers)
+        mutableHeaders[E2eeSessionManager.HEADER_CLIENT_PUB] = E2eeSessionManager.clientPublicKeyBase64
+
+        val activeSession = E2eeSessionManager.session(originKey)
+        var wireBody = body
+        if (activeSession != null) {
+            mutableHeaders[E2eeSessionManager.HEADER_E2EE] = E2eeSessionManager.VERSION
+            mutableHeaders[E2eeSessionManager.HEADER_SESSION] = activeSession.sessionId
+            val authEntry = mutableHeaders.entries.firstOrNull { it.key.equals("authorization", ignoreCase = true) }
+            if (authEntry != null) {
+                runCatching {
+                    val encAuth = E2eeSessionManager.encryptString(
+                        activeSession.aesKey,
+                        E2eeSessionManager.AAD_AUTH,
+                        authEntry.value,
+                    )
+                    mutableHeaders[E2eeSessionManager.HEADER_AUTH] = encAuth
+                    mutableHeaders[authEntry.key] = "Bearer e2ee"
+                }
+            }
+            if (!body.isNullOrEmpty()) {
+                runCatching {
+                    wireBody = E2eeSessionManager.encryptString(
+                        activeSession.aesKey,
+                        E2eeSessionManager.AAD_REQ,
+                        body,
+                    )
+                    mutableHeaders["content-type"] = "text/plain; charset=utf-8"
+                }
+            }
+        }
+
+        mutableHeaders.forEach { (key, value) -> connection.setRequestProperty(key, value) }
+        if (wireBody != null) {
             connection.doOutput = true
             connection.outputStream.use { output ->
-                output.write(body.toByteArray(Charsets.UTF_8))
+                output.write(wireBody!!.toByteArray(Charsets.UTF_8))
             }
         }
         val status = connection.responseCode
+        val updatedSession = E2eeSessionManager.ingestHandshake(
+            originKey,
+            connection.getHeaderField(E2eeSessionManager.HEADER_SESSION),
+            connection.getHeaderField(E2eeSessionManager.HEADER_SERVER_PUB),
+        ) ?: activeSession
         val stream = if (status >= 400) connection.errorStream else connection.inputStream
         val responseBody = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+        val respIsE2ee = connection.getHeaderField(E2eeSessionManager.HEADER_E2EE)
+            ?.equals(E2eeSessionManager.VERSION, ignoreCase = true) == true
+        if (respIsE2ee && responseBody.isNotEmpty() && updatedSession != null) {
+            val decrypted = runCatching {
+                E2eeSessionManager.decryptString(updatedSession.aesKey, E2eeSessionManager.AAD_RESP, responseBody)
+            }.getOrNull()
+            if (decrypted != null) {
+                return HttpExchange(status, decrypted)
+            }
+        }
         return HttpExchange(status, responseBody)
     }
 }

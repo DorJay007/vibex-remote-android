@@ -23,8 +23,9 @@ object OriginOrder {
     }
 
     private fun originPriority(url: String, lastSuccess: String?): Int {
-        if (lastSuccess != null && url == lastSuccess) return 0
         val lower = url.lowercase()
+        val isCloud = lower.startsWith("https://") || lower.contains("/t/")
+        if (lastSuccess != null && url == lastSuccess && !isCloud) return 0
         // Deprioritize proxy TUN / Fake-IP benchmarking range (198.18.0.0/15)
         if (Regex("""^https?://198\.1[89]\.""").containsMatchIn(lower)) return 60
         // Deprioritize IPv6 ULA (fd00::/8) and link-local (fe80::/10) which often fail across LAN/USB
@@ -34,6 +35,8 @@ object OriginOrder {
         if (lower.contains("://127.0.0.1") || lower.contains("://localhost")) return 5
         // Prioritize IPv4 private LAN addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
         if (Regex("""^https?://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)) return 10
+        if (!isCloud && lower.startsWith("http://")) return 15
+        if (lastSuccess != null && url == lastSuccess) return 25
         if (lower.startsWith("https://")) return 30
         return 40
     }

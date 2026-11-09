@@ -168,7 +168,7 @@ private fun SettingsIndex(
         item {
             IosSettingsCard {
                 val activeUrl = state.activeOrigin ?: selected?.lastSuccessOrigin ?: ""
-                val isCloudActive = activeUrl.contains("vibex.xforever.xin", ignoreCase = true) ||
+                val isCloudActive = activeUrl.contains("/t/") ||
                     activeUrl.startsWith("https://", ignoreCase = true)
                 val hostSub = if (selected != null) {
                     val hostAddr = activeUrl
@@ -573,12 +573,34 @@ private fun LazyListScope.ConnectionSettings(
         var detailProfile by remember { mutableStateOf<HostProfile?>(null) }
 
         Column(verticalArrangement = Arrangement.spacedBy(16.dp)) {
+            GroupLabel("连接偏好")
+            IosSettingsCard {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("自动连接已配对电脑", fontSize = 15.sp, fontWeight = FontWeight.Medium, color = colors.textPrimary)
+                        Text("打开应用或断开后自动重连已配对电脑", fontSize = 12.sp, color = colors.textSecondary)
+                    }
+                    Switch(
+                        checked = state.autoConnect,
+                        onCheckedChange = { model.setAutoConnect(it) },
+                    )
+                }
+            }
+
             GroupLabel("新增连接")
             IosSettingsCard {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable { onManualPair() }
+                        .clickable {
+                            model.selectDiscoveryMode("lan")
+                            onManualPair()
+                        }
                         .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -593,25 +615,9 @@ private fun LazyListScope.ConnectionSettings(
                         Icon(Icons.Outlined.QrCodeScanner, null, tint = colors.accent, modifier = Modifier.size(22.dp))
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text("配对新的电脑", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.accent)
-                            Text(
-                                "云服务 Beta",
-                                fontSize = 10.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.accent,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(colors.accent.copy(0.12f))
-                                    .border(0.5.dp, colors.accent.copy(0.28f), CircleShape)
-                                    .padding(horizontal = 7.dp, vertical = 1.5.dp),
-                            )
-                        }
+                        Text("配对新的电脑", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.accent)
                         Text(
-                            "扫码、8 位连接码或云服务跨网连接",
+                            "选择局域网直连或云服务跨网配对",
                             fontSize = 12.5.sp,
                             color = colors.textSecondary,
                             maxLines = 1,
@@ -648,7 +654,7 @@ private fun LazyListScope.ConnectionSettings(
                         if (index > 0) HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 68.dp))
                         val isActive = profile.hostId == state.selectedHostId
                         val origin = if (isActive) (state.activeOrigin ?: profile.lastSuccessOrigin) else profile.lastSuccessOrigin
-                        val isCloudOrigin = (origin ?: "").contains("vibex.xforever.xin", ignoreCase = true) ||
+                        val isCloudOrigin = (origin ?: "").contains("/t/") ||
                             (origin ?: "").startsWith("https://", ignoreCase = true)
                         val hostAddr = (origin ?: "")
                             .removePrefix("http://")
@@ -727,7 +733,8 @@ private fun LazyListScope.ConnectionSettings(
                                 if (isActive) {
                                     val telemetryLine = if (state.connection == ConnectionState.Online) {
                                         val rttText = state.realtimeRttMs?.let { "${it} ms" } ?: "测量中"
-                                        "在线 · 实时延迟 $rttText"
+                                        val e2eeSuffix = if (!origin.isNullOrBlank() && dev.vibex.companion.E2eeSessionManager.isE2eeActive(origin)) " · 端到端加密" else ""
+                                        "在线 · 实时延迟 $rttText$e2eeSuffix"
                                     } else {
                                         val reason = state.connectionFailureReason ?: connectionLabel(state.connection)
                                         "状态: $reason"

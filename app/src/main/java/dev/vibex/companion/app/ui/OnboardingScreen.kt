@@ -67,45 +67,16 @@ fun OnboardingScreen(
 ) {
     val colors = VibexTheme.colors
     val clipboard = LocalClipboardManager.current
-    val fallbackSavedOrigin = state.activeOrigin
-        ?: state.profiles.firstOrNull { it.hostId == state.selectedHostId }?.lastSuccessOrigin
-        ?: state.profiles.firstOrNull()?.lastSuccessOrigin
-        ?: ""
-    val initialManualOrigin = remember(fallbackSavedOrigin) {
-        if (fallbackSavedOrigin.contains("vibex.xforever.xin", ignoreCase = true) || fallbackSavedOrigin.contains("/t/")) {
-            ""
-        } else {
-            fallbackSavedOrigin
-        }
-    }
     var code by remember { mutableStateOf("") }
-    var origin by remember { mutableStateOf(initialManualOrigin) }
-    var showManualOrigin by remember { mutableStateOf(false) }
-
     val trimmedCode = code.trim()
     val isInvitation = trimmedCode.startsWith("vibex-pairing:") || trimmedCode.startsWith("{")
-    val parsedInvitationHost = remember(trimmedCode) {
-        if (!isInvitation) null
-        else runCatching {
-            val inv = PairingInvitationParser.parse(trimmedCode)
-            inv.reachability.firstOrNull { !it.origin.value.contains("[fd", true) }?.origin?.value
-                ?: inv.reachability.firstOrNull()?.origin?.value
-        }.getOrNull()
-    }
-    val resolvedOrigin = origin.trim().ifEmpty {
-        state.discoveredHosts.firstOrNull()?.origin ?: fallbackSavedOrigin
-    }
-    val canSubmit = !state.pairing && trimmedCode.isNotEmpty() && (isInvitation || resolvedOrigin.isNotEmpty())
-    val recentOrigins = remember(state.profiles) {
-        state.profiles
-            .mapNotNull { it.lastSuccessOrigin }
-            .filterNot { it.contains("vibex.xforever.xin", ignoreCase = true) || it.contains("/t/") }
-            .distinct()
-    }
+    val canSubmit = !state.pairing && trimmedCode.isNotEmpty()
+    val activeMode = state.preferredDiscoveryMode ?: "lan"
+    val isLan = activeMode == "lan"
 
-    LaunchedEffect(Unit) {
+    LaunchedEffect(activeMode) {
         if (state.discoveredHosts.isEmpty() && !state.discoveringHosts) {
-            model.discoverHosts(autoRequestIfSingle = false)
+            model.discoverHosts(autoRequestIfSingle = false, modeOverride = activeMode)
         }
     }
 
@@ -114,7 +85,7 @@ fun OnboardingScreen(
             if (isInvitation) {
                 model.pairFromRaw(trimmedCode)
             } else {
-                model.pairManual(resolvedOrigin, trimmedCode)
+                model.pairManual("", trimmedCode)
             }
         }
     }
@@ -127,7 +98,7 @@ fun OnboardingScreen(
             .navigationBarsPadding()
             .imePadding(),
     ) {
-        // iOS Inline Navigation Bar: 取消 | 配对电脑 | 配对
+        // Inline Navigation Bar: 取消 | 配对电脑 | 配对
         Box(
             Modifier
                 .fillMaxWidth()
@@ -171,9 +142,8 @@ fun OnboardingScreen(
                 .fillMaxSize()
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(18.dp),
+            verticalArrangement = Arrangement.spacedBy(16.dp),
         ) {
-            // 0. Zero-Config Auto-Discovered LAN Hosts / Pending SAS Approval
             if (state.pendingConnectSasCode != null) {
                 Column(
                     Modifier
@@ -211,14 +181,66 @@ fun OnboardingScreen(
                     )
                 }
             } else {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                // 1. Segmented Mode Switcher (Default: 局域网直连)
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(colors.card)
+                        .border(0.75.dp, colors.stroke, RoundedCornerShape(11.dp))
+                        .padding(3.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (isLan) colors.accent else colors.card)
+                            .clickable { model.selectDiscoveryMode("lan") }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "局域网直连",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (isLan) colors.onAccent else colors.textSecondary,
+                        )
+                    }
+                    Box(
+                        Modifier
+                            .weight(1f)
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (!isLan) colors.accent else colors.card)
+                            .clickable { model.selectDiscoveryMode("cloud") }
+                            .padding(vertical = 8.dp),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Text(
+                            "云服务 Beta",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = if (!isLan) colors.onAccent else colors.textSecondary,
+                        )
+                    }
+                }
+
+                // 2. Discovered Online Computers Card
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(0.75.dp, colors.stroke, RoundedCornerShape(12.dp)),
+                ) {
                     Row(
-                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 10.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Text(
-                            "在线电脑",
+                            if (isLan) "同一 Wi-Fi 在线电脑" else "云服务在线电脑 · Beta",
                             fontSize = 12.sp,
+                            fontWeight = FontWeight.Medium,
                             color = colors.textSecondary,
                             modifier = Modifier.weight(1f),
                         )
@@ -233,73 +255,90 @@ fun OnboardingScreen(
                             Text(
                                 if (state.discoveringHosts) "搜索中…" else "刷新",
                                 fontSize = 12.sp,
+                                fontWeight = FontWeight.Medium,
                                 color = colors.accent,
                             )
                         }
                     }
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.card),
-                    ) {
-                        if (state.discoveredHosts.isEmpty()) {
+                    HorizontalDivider(color = colors.hairline)
+
+                    if (state.discoveredHosts.isEmpty()) {
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 14.dp, vertical = 14.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
                             Text(
-                                if (state.discoveringHosts) "正在扫描同一局域网内在线的 VibeX 电脑…"
-                                else "未发现局域网电脑，请使用下方扫码或连接码通过云服务配对。",
+                                if (state.discoveringHosts) {
+                                    if (isLan) "正在扫描同一局域网内在线的 VibeX 电脑…"
+                                    else "正在通过云服务搜索在线电脑…"
+                                } else {
+                                    if (isLan) "当前 Wi-Fi 未发现电脑"
+                                    else "未在云服务发现电脑，请确认电脑端在线"
+                                },
                                 fontSize = 12.5.sp,
                                 color = colors.textSecondary,
-                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
                             )
-                        } else {
-                            state.discoveredHosts.forEachIndexed { idx, host ->
-                                if (idx > 0) {
-                                    HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
-                                }
-                                val isCloudHost = host.origin.contains("vibex.xforever.xin", ignoreCase = true) ||
-                                    host.origin.startsWith("https://", ignoreCase = true)
-                                val cleanHostName = host.name.removeSuffix(".local").ifBlank { "VibeX 桌面端" }
-                                Row(
+                            if (!state.discoveringHosts && isLan) {
+                                Text(
+                                    "跨网络或未扫到？点击切换至「云服务 Beta」",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.accent,
+                                    modifier = Modifier.clickable { model.selectDiscoveryMode("cloud") },
+                                )
+                            }
+                        }
+                    } else {
+                        state.discoveredHosts.forEachIndexed { idx, host ->
+                            if (idx > 0) {
+                                HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
+                            }
+                            val isCloudHost = host.origin.contains("/t/") ||
+                                host.origin.startsWith("https://", ignoreCase = true)
+                            val cleanHostName = host.name.removeSuffix(".local").ifBlank { "VibeX 桌面端" }
+                            Row(
+                                Modifier
+                                    .fillMaxWidth()
+                                    .clickable(enabled = !state.pairing) { model.requestConnectToHost(host) }
+                                    .padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                            ) {
+                                Box(
                                     Modifier
-                                        .fillMaxWidth()
-                                        .clickable(enabled = !state.pairing) { model.requestConnectToHost(host) }
-                                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        .size(38.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(colors.accent.copy(0.12f)),
+                                    contentAlignment = Alignment.Center,
                                 ) {
-                                    Box(
-                                        Modifier
-                                            .size(38.dp)
-                                            .clip(RoundedCornerShape(10.dp))
-                                            .background(colors.accent.copy(0.12f)),
-                                        contentAlignment = Alignment.Center,
-                                    ) {
-                                        Icon(Icons.Rounded.Computer, null, tint = colors.accent, modifier = Modifier.size(19.dp))
-                                    }
-                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                        Text(
-                                            cleanHostName,
-                                            fontSize = 15.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = colors.textPrimary,
-                                            maxLines = 1,
-                                        )
-                                        Text(
-                                            if (isCloudHost) "VibeX 云服务 · Beta" else host.origin,
-                                            fontSize = 12.sp,
-                                            fontFamily = if (isCloudHost) null else PlexMono,
-                                            color = if (isCloudHost) colors.accent else colors.textSecondary,
-                                            maxLines = 1,
-                                        )
-                                    }
-                                    Box(
-                                        Modifier
-                                            .clip(RoundedCornerShape(8.dp))
-                                            .background(colors.accent)
-                                            .padding(horizontal = 12.dp, vertical = 6.dp),
-                                    ) {
-                                        Text("一键连接", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.onAccent)
-                                    }
+                                    Icon(Icons.Rounded.Computer, null, tint = colors.accent, modifier = Modifier.size(19.dp))
+                                }
+                                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                    Text(
+                                        cleanHostName,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                    )
+                                    Text(
+                                        if (isCloudHost) "VibeX 云服务 · Beta" else host.origin,
+                                        fontSize = 12.sp,
+                                        fontFamily = if (isCloudHost) null else PlexMono,
+                                        color = if (isCloudHost) colors.accent else colors.textSecondary,
+                                        maxLines = 1,
+                                    )
+                                }
+                                Box(
+                                    Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(colors.accent)
+                                        .padding(horizontal = 12.dp, vertical = 6.dp),
+                                ) {
+                                    Text("一键连接", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.onAccent)
                                 }
                             }
                         }
@@ -307,225 +346,96 @@ fun OnboardingScreen(
                 }
             }
 
-            // 1. Primary QR Scan Action Card
-            Row(
+            // 3. Combined QR Scan + Connection Code Card
+            Column(
                 Modifier
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(12.dp))
                     .background(colors.card)
-                    .clickable(enabled = !state.pairing, onClick = onScan)
-                    .padding(horizontal = 14.dp, vertical = 12.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                    .border(0.75.dp, colors.stroke, RoundedCornerShape(12.dp)),
             ) {
-                Box(
-                    Modifier
-                        .size(40.dp)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(colors.accent.copy(0.15f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Outlined.QrCodeScanner, null, tint = colors.accent, modifier = Modifier.size(21.dp))
-                }
-                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                    Text("扫码配对", fontSize = 15.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
-                    Text("对准桌面端二维码即可自动识别连接", fontSize = 12.sp, color = colors.textSecondary)
-                }
-                Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = colors.textTertiary, modifier = Modifier.size(18.dp))
-            }
-
-            // 2. Connection Code Input Section
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Row(
-                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    Text(
-                        "连接码",
-                        fontSize = 12.sp,
-                        color = colors.textSecondary,
-                    )
-                    Text(
-                        "云服务 Beta",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.accent,
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(colors.accent.copy(0.12f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                }
-                Column(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.card),
+                        .clickable(enabled = !state.pairing, onClick = onScan)
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
+                    Box(
+                        Modifier
+                            .size(38.dp)
+                            .clip(RoundedCornerShape(10.dp))
+                            .background(colors.accent.copy(0.14f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Outlined.QrCodeScanner, null, tint = colors.accent, modifier = Modifier.size(20.dp))
+                    }
+                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                        Text("扫码配对", fontSize = 14.5.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
+                        Text("扫描桌面端二维码自动配对", fontSize = 12.sp, color = colors.textSecondary)
+                    }
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = colors.textTertiary, modifier = Modifier.size(18.dp))
+                }
+                HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Box(Modifier.weight(1f)) {
+                        if (code.isEmpty()) {
+                            Text(
+                                "输入 8 位连接码或粘贴邀请码",
+                                fontSize = 13.5.sp,
+                                color = colors.textTertiary,
+                                fontFamily = PlexMono,
+                            )
+                        }
+                        BasicTextField(
+                            value = code,
+                            onValueChange = { code = it },
+                            singleLine = true,
+                            textStyle = TextStyle(
+                                color = colors.textPrimary,
+                                fontSize = 14.sp,
+                                fontFamily = PlexMono,
+                            ),
+                            cursorBrush = SolidColor(colors.accent),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (code.isNotEmpty()) {
+                        Icon(
+                            Icons.Rounded.Cancel,
+                            contentDescription = "清除",
+                            tint = colors.textTertiary,
+                            modifier = Modifier
+                                .size(18.dp)
+                                .clickable { code = "" },
+                        )
+                    }
                     Row(
                         Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
+                            .clip(CircleShape)
+                            .background(colors.accent.copy(0.14f))
+                            .clickable {
+                                val pasted = clipboard.getText()?.text.orEmpty().trim()
+                                if (pasted.isNotEmpty()) {
+                                    code = pasted
+                                    if (pasted.startsWith("vibex-pairing:") || pasted.startsWith("{")) {
+                                        model.pairFromRaw(pasted)
+                                    }
+                                }
+                            }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        Box(Modifier.weight(1f)) {
-                            if (code.isEmpty()) {
-                                Text(
-                                    "输入 8 位连接码或粘贴完整邀请码",
-                                    fontSize = 14.sp,
-                                    color = colors.textTertiary,
-                                    fontFamily = PlexMono,
-                                )
-                            }
-                            BasicTextField(
-                                value = code,
-                                onValueChange = { code = it },
-                                singleLine = true,
-                                textStyle = TextStyle(
-                                    color = colors.textPrimary,
-                                    fontSize = 14.sp,
-                                    fontFamily = PlexMono,
-                                ),
-                                cursorBrush = SolidColor(colors.accent),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        if (code.isNotEmpty()) {
-                            Icon(
-                                Icons.Rounded.Cancel,
-                                contentDescription = "清除",
-                                tint = colors.textTertiary,
-                                modifier = Modifier
-                                    .size(18.dp)
-                                    .clickable { code = "" },
-                            )
-                        }
-                        Row(
-                            Modifier
-                                .clip(CircleShape)
-                                .background(colors.accent.copy(0.14f))
-                                .clickable {
-                                    val pasted = clipboard.getText()?.text.orEmpty().trim()
-                                    if (pasted.isNotEmpty()) {
-                                        code = pasted
-                                        if (pasted.startsWith("vibex-pairing:") || pasted.startsWith("{")) {
-                                            model.pairFromRaw(pasted)
-                                        }
-                                    }
-                                }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(Icons.Rounded.ContentPaste, null, tint = colors.accent, modifier = Modifier.size(13.dp))
-                            Text("粘贴", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.accent)
-                        }
-                    }
-                    if (parsedInvitationHost != null) {
-                        val isCloudInv = parsedInvitationHost.contains("vibex.xforever.xin", ignoreCase = true) ||
-                            parsedInvitationHost.startsWith("https://", ignoreCase = true)
-                        HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                        ) {
-                            Text("连接通道", fontSize = 13.sp, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                            Text(
-                                if (isCloudInv) "VibeX 云服务 · Beta" else parsedInvitationHost,
-                                fontSize = 12.sp,
-                                fontFamily = if (isCloudInv) null else PlexMono,
-                                color = if (isCloudInv) colors.accent else colors.textSecondary,
-                            )
-                        }
-                    }
-                }
-            }
-
-            // 3. Optional Manual LAN / Self-Hosted Address (Collapsed by default)
-            if (!isInvitation) {
-                if (!showManualOrigin) {
-                    Text(
-                        "手动指定局域网 IP 或自建地址",
-                        fontSize = 12.5.sp,
-                        color = colors.accent,
-                        modifier = Modifier
-                            .padding(start = 12.dp)
-                            .clickable { showManualOrigin = true },
-                    )
-                } else {
-                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                        Text(
-                            "局域网 IP / 自建地址（可选）",
-                            fontSize = 12.sp,
-                            color = colors.textSecondary,
-                            modifier = Modifier.padding(start = 12.dp),
-                        )
-                        Column(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.card)
-                                .padding(horizontal = 14.dp, vertical = 12.dp),
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Box(Modifier.fillMaxWidth()) {
-                                if (origin.isEmpty()) {
-                                    Text(
-                                        "例如 192.168.1.2:17891（留空则自动使用在线电脑）",
-                                        fontSize = 13.5.sp,
-                                        color = colors.textTertiary,
-                                    )
-                                }
-                                BasicTextField(
-                                    value = origin,
-                                    onValueChange = { origin = it },
-                                    singleLine = true,
-                                    textStyle = TextStyle(
-                                        color = colors.textPrimary,
-                                        fontSize = 14.sp,
-                                        fontFamily = PlexMono,
-                                    ),
-                                    cursorBrush = SolidColor(colors.accent),
-                                    modifier = Modifier.fillMaxWidth(),
-                                )
-                            }
-                            if (recentOrigins.isNotEmpty()) {
-                                Row(
-                                    Modifier.horizontalScroll(rememberScrollState()),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                                ) {
-                                    recentOrigins.forEach { savedOrigin ->
-                                        val selected = origin.trim() == savedOrigin
-                                        Row(
-                                            Modifier
-                                                .clip(CircleShape)
-                                                .background(if (selected) colors.accent.copy(0.16f) else colors.bg)
-                                                .clickable { origin = savedOrigin }
-                                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        ) {
-                                            Icon(
-                                                if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.History,
-                                                null,
-                                                tint = if (selected) colors.accent else colors.textSecondary,
-                                                modifier = Modifier.size(12.dp),
-                                            )
-                                            Text(
-                                                savedOrigin,
-                                                fontSize = 11.sp,
-                                                fontFamily = PlexMono,
-                                                color = if (selected) colors.accent else colors.textSecondary,
-                                            )
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        Icon(Icons.Rounded.ContentPaste, null, tint = colors.accent, modifier = Modifier.size(13.dp))
+                        Text("粘贴", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.accent)
                     }
                 }
             }

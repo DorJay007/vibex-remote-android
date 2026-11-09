@@ -12,8 +12,8 @@ class CompanionScopesTest {
         assertTrue(CompanionScopes.allowed.contains("offline.read"))
         assertTrue(CompanionScopes.allowed.contains("notification.summary"))
         assertEquals(emptySet(), CompanionScopes.extras(CompanionScopes.allowed))
-        assertEquals(setOf("plugin.write", "workflow.write"), CompanionScopes.extras(
-            listOf("conversation.read", "plugin.write", "workflow.write"),
+        assertEquals(setOf("host.admin", "device.pair"), CompanionScopes.extras(
+            listOf("conversation.read", "plugin.write", "host.admin", "device.pair"),
         ))
     }
 }

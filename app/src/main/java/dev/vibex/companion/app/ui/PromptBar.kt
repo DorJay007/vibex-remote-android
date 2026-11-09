@@ -195,6 +195,50 @@ fun PromptBar(
                 .padding(horizontal = 12.dp, vertical = 8.dp),
             verticalArrangement = Arrangement.spacedBy(8.dp),
         ) {
+            // Menus above dock (never overlap the input dock)
+            AnimatedVisibility(
+                visible = menu == ComposerMenu.Model && modelOption != null && modelOption.choices.size > 1,
+                enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
+            ) {
+                if (modelOption != null) {
+                    MenuList(
+                        title = modelOption.label,
+                        choices = modelOption.choices,
+                        selected = modelOption.value,
+                        leading = {
+                            AgentAvatar(
+                                agentId = agentId,
+                                size = 15.dp,
+                                iconSvg = agent?.iconSvg,
+                                displayName = agent?.displayName.orEmpty(),
+                            )
+                        },
+                        onSelect = { value ->
+                            onSelectOption(modelOption.key, value)
+                            onMenuChange(null)
+                        },
+                    )
+                }
+            }
+
+            AnimatedVisibility(
+                visible = menu == ComposerMenu.Effort && effortOption != null && effortOption.choices.size > 1,
+                enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
+            ) {
+                if (effortOption != null) {
+                    EffortMenu(
+                        option = effortOption,
+                        onSelect = { value ->
+                            onSelectOption(effortOption.key, value)
+                            onMenuChange(null)
+                        },
+                        modifier = Modifier.width(280.dp),
+                    )
+                }
+            }
+
             // Dock
             Box(
                 modifier = Modifier
@@ -497,47 +541,6 @@ fun PromptBar(
                         }
                     }
                 }
-            }
-        }
-
-        // Floating Menus above dock
-        if (menu == ComposerMenu.Model && modelOption != null && modelOption.choices.size > 1) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 12.dp, bottom = 96.dp),
-            ) {
-                MenuList(
-                    title = modelOption.label,
-                    choices = modelOption.choices,
-                    selected = modelOption.value,
-                    leading = {
-                        AgentAvatar(
-                            agentId = agentId,
-                            size = 15.dp,
-                            iconSvg = agent?.iconSvg,
-                            displayName = agent?.displayName.orEmpty(),
-                        )
-                    },
-                    onSelect = { value ->
-                        onSelectOption(modelOption.key, value)
-                        onMenuChange(null)
-                    },
-                )
-            }
-        }
-
-        if (menu == ComposerMenu.Effort && effortOption != null && effortOption.choices.size > 1) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .padding(start = 12.dp, bottom = 96.dp),
-            ) {
-                EffortMenu(
-                    option = effortOption,
-                    onSelect = { value -> onSelectOption(effortOption.key, value) },
-                    modifier = Modifier.width(280.dp),
-                )
             }
         }
     }
@@ -1096,9 +1099,7 @@ private fun EffortMenu(
             onCommit = { next ->
                 liveIndex = next
                 choices.getOrNull(next)?.let { choice ->
-                    if (choice.value != option.value) {
-                        onSelect(choice.value)
-                    }
+                    onSelect(choice.value)
                 }
             },
         )

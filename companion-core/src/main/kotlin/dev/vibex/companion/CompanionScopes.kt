@@ -1,8 +1,8 @@
 package dev.vibex.companion
 
 /**
- * Companion Device scopes from ADR-0054. Authorization still checks each
- * scope; this set is only the pairing allowlist the phone will accept.
+ * Device scopes from ADR-0054 (`companion` + `workstation` presets).
+ * Host administration (`host.admin`, `device.pair`) is never accepted on mobile.
  */
 object CompanionScopes {
     val allowed: Set<String> = setOf(
@@ -13,13 +13,23 @@ object CompanionScopes {
         "conversation.question",
         "conversation.cancel",
         "conversation.steer",
+        "application.call",
         "plugin.read",
+        "plugin.write",
+        "plugin.surface",
         "artifact.read",
+        "artifact.preview",
         "workflow.read",
+        "workflow.write",
+        "workflow.run",
+        "workflow.approve",
         "automation.read",
+        "automation.write",
         "delegation.read",
+        "delegation.cancel",
         "notification.summary",
         "offline.read",
+        "workspace.terminal",
     )
 
     fun extras(scopes: Collection<String>): Set<String> =

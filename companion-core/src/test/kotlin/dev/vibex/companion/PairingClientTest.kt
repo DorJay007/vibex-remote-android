@@ -36,12 +36,12 @@ class PairingClientTest {
     }
 
     @Test
-    fun redeemRejectsWorkstationScopes() {
+    fun redeemRejectsHostAdminScopes() {
         val transport = ScriptedTransport(
             listOf(
                 HttpExchange(
                     201,
-                    """{"device_id":"11111111-1111-1111-1111-111111111111","access_token":"device-token","scopes":["conversation.read","plugin.write"]}""",
+                    """{"device_id":"11111111-1111-1111-1111-111111111111","access_token":"device-token","scopes":["conversation.read","host.admin"]}""",
                 ),
             ),
         )
@@ -51,7 +51,7 @@ class PairingClientTest {
                 "token",
             )
         }
-        assertTrue(error.message!!.contains("plugin.write"))
+        assertTrue(error.message!!.contains("host.admin"))
     }
 
     @Test
@@ -59,6 +59,23 @@ class PairingClientTest {
         assertFailsWith<IllegalArgumentException> {
             HostOrigin.parse("http://user:secret@127.0.0.1:3080")
         }
+    }
+
+    @Test
+    fun e2eeHandshakeAndAesGcmRoundTripSucceeds() {
+        val origin = "https://relay.example.com/t/host-e2ee-android"
+        val session = E2eeSessionManager.ingestHandshake(
+            origin,
+            "sess-android-01",
+            E2eeSessionManager.clientPublicKeyBase64,
+        )
+        assertTrue(session != null)
+        assertTrue(E2eeSessionManager.isE2eeActive(origin))
+
+        val plain = """{"operation_id":"op-1","args":{"text":"hello e2ee"}}"""
+        val cipherB64 = E2eeSessionManager.encryptString(session.aesKey, E2eeSessionManager.AAD_REQ, plain)
+        val decrypted = E2eeSessionManager.decryptString(session.aesKey, E2eeSessionManager.AAD_REQ, cipherB64)
+        assertEquals(plain, decrypted)
     }
 }
 

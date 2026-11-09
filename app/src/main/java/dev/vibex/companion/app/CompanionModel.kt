@@ -1,11 +1,13 @@
 package dev.vibex.companion.app
 
 import android.app.Application
+import android.content.Context
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import dev.vibex.companion.AgentPlanUsage
 import dev.vibex.companion.AuthRequiredException
+import dev.vibex.companion.MobileDeviceConflictException
 import dev.vibex.companion.CatalogAgent
 import dev.vibex.companion.CatalogWorkspace
 import dev.vibex.companion.CollabBotAvatarConfig
@@ -133,6 +135,7 @@ data class UiState(
     val diffsLoading: Boolean = false,
     val discoveredHosts: List<DiscoveredLanHost> = emptyList(),
     val discoveringHosts: Boolean = false,
+    val preferredDiscoveryMode: String? = "lan",
     val pendingConnectSasCode: String? = null,
     val pendingConnectHostName: String? = null,
     val pendingConnectOrigin: String? = null,
@@ -140,6 +143,10 @@ data class UiState(
     val realtimeRttMs: Long? = null,
     val transportPath: String = "LAN 直连",
     val connectionFailureReason: String? = null,
+    val pendingConflictDeviceName: String? = null,
+    val pendingCloudFallbackOrigin: String? = null,
+    val pendingCloudFallbackHostName: String? = null,
+    val autoConnect: Boolean = true,
     val route: Route = Route.Conversations,
 )
 
@@ -165,6 +172,7 @@ data class CollabDetailBundle(
 )
 
 class CompanionModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = application.getSharedPreferences("vibex_companion_prefs", Context.MODE_PRIVATE)
     private val profiles = ProfileStore(application)
     private val credentials = CredentialStore(application)
     private val offline = OfflineStore(application)
@@ -179,6 +187,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var timelinePollJob: Job? = null
     private var connectPollJob: Job? = null
     private var autoReconnectJob: Job? = null
+    private var pendingConflictRetryAction: (() -> Unit)? = null
+    private val declinedCloudFallbackHostIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     @Volatile
     private var boostPollingUntil: Long = 0L
 
@@ -187,6 +197,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     init {
         val stored = profiles.load()
+        val savedAutoConnect = prefs.getBoolean("auto_connect", true)
         val selectedHostId = stored.selectedHostId ?: stored.profiles.firstOrNull()?.hostId
         val selected = stored.profiles.find { it.hostId == selectedHostId }
         _state.value = UiState(
@@ -196,15 +207,67 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             appearance = stored.appearance,
             accent = if (stored.accent == AccentChoice.Ink) AccentChoice.Blue else stored.accent,
             streamDisplay = stored.streamDisplay,
+            autoConnect = savedAutoConnect,
             route = Route.Conversations,
-            connection = if (stored.profiles.isEmpty()) ConnectionState.Offline else ConnectionState.Connecting,
+            connection = if (stored.profiles.isEmpty() || !savedAutoConnect) ConnectionState.Offline else ConnectionState.Connecting,
+            connectionFailureReason = if (!savedAutoConnect && stored.profiles.isNotEmpty()) "自动连接已关闭" else null,
         )
-        if (stored.profiles.isNotEmpty()) {
+        if (stored.profiles.isNotEmpty() && savedAutoConnect) {
             connectSelected()
         } else {
-            discoverHosts(autoRequestIfSingle = true)
+            discoverHosts(autoRequestIfSingle = false, modeOverride = "lan")
         }
         startAutoReconnectLoop()
+    }
+
+    fun setAutoConnect(enabled: Boolean) {
+        prefs.edit().putBoolean("auto_connect", enabled).apply()
+        _state.update { it.copy(autoConnect = enabled) }
+        if (enabled && _state.value.profiles.isNotEmpty() && _state.value.connection != ConnectionState.Online) {
+            connectSelected()
+        }
+    }
+
+    fun confirmReplaceMobileDevice() {
+        val retry = pendingConflictRetryAction
+        pendingConflictRetryAction = null
+        _state.update { it.copy(pendingConflictDeviceName = null) }
+        retry?.invoke()
+    }
+
+    fun cancelReplaceMobileDevice() {
+        pendingConflictRetryAction = null
+        _state.update { it.copy(pendingConflictDeviceName = null, pairing = false) }
+    }
+
+    fun confirmSwitchToCloudFallback() {
+        val cloudOrigin = _state.value.pendingCloudFallbackOrigin ?: return
+        val profile = selectedProfile() ?: return
+        declinedCloudFallbackHostIds.remove(profile.hostId)
+        _state.update {
+            it.copy(
+                pendingCloudFallbackOrigin = null,
+                pendingCloudFallbackHostName = null,
+            )
+        }
+        val updated = profile.copy(
+            lastSuccessOrigin = cloudOrigin,
+            reachability = (profile.reachability + StoredReachability(cloudOrigin, "published")).distinctBy { it.origin },
+        )
+        upsertProfile(updated, true)
+        viewModelScope.launch {
+            connect(updated, allowCloudSwitch = true)
+        }
+    }
+
+    fun cancelSwitchToCloudFallback() {
+        selectedProfile()?.let { declinedCloudFallbackHostIds.add(it.hostId) }
+        _state.update {
+            it.copy(
+                pendingCloudFallbackOrigin = null,
+                pendingCloudFallbackHostName = null,
+            )
+        }
     }
 
     private fun startAutoReconnectLoop() {
@@ -213,7 +276,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             while (isActive) {
                 delay(5_000)
                 val current = _state.value
-                if (current.profiles.isNotEmpty()) {
+                if (current.profiles.isNotEmpty() && current.autoConnect) {
                     if (
                         current.connection == ConnectionState.Offline ||
                         current.connection == ConnectionState.Recovering ||
@@ -225,24 +288,53 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                 } else if (
+                    current.preferredDiscoveryMode != null &&
+                    current.discoveredHosts.isEmpty() &&
                     current.pendingConnectSasCode == null &&
                     !current.discoveringHosts &&
                     !current.pairing
                 ) {
-                    discoverHosts(autoRequestIfSingle = true)
+                    discoverHosts(autoRequestIfSingle = false)
                 }
             }
         }
     }
 
-    fun discoverHosts(autoRequestIfSingle: Boolean = false) {
+    fun selectDiscoveryMode(mode: String?) {
+        if (mode == null) {
+            _state.update {
+                it.copy(
+                    preferredDiscoveryMode = null,
+                    discoveredHosts = emptyList(),
+                    discoveringHosts = false,
+                )
+            }
+            return
+        }
+        _state.update {
+            it.copy(
+                preferredDiscoveryMode = mode,
+                discoveredHosts = emptyList(),
+            )
+        }
+        discoverHosts(autoRequestIfSingle = false, modeOverride = mode)
+    }
+
+    fun discoverHosts(autoRequestIfSingle: Boolean = false, modeOverride: String? = null) {
         if (_state.value.discoveringHosts) return
+        val mode = modeOverride ?: _state.value.preferredDiscoveryMode ?: return
         viewModelScope.launch {
-            _state.update { it.copy(discoveringHosts = true) }
+            _state.update { it.copy(discoveringHosts = true, preferredDiscoveryMode = mode) }
             val knownRelayOrigins = _state.value.profiles.flatMap { p -> p.reachability.map { it.origin } }
+            val useCloud = mode == "cloud"
             val found = withContext(Dispatchers.IO) {
-                runCatching { PairingClient.discoverLanHosts(extraRelayOrigins = knownRelayOrigins) }
-                    .getOrDefault(emptyList())
+                runCatching {
+                    PairingClient.discoverLanHosts(
+                        extraRelayOrigins = if (useCloud) knownRelayOrigins else emptyList(),
+                        includeCloudRelay = useCloud,
+                        cloudOnly = useCloud,
+                    )
+                }.getOrDefault(emptyList())
             }
             _state.update { it.copy(discoveredHosts = found, discoveringHosts = false) }
             if (
@@ -257,7 +349,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun requestConnectToHost(host: DiscoveredLanHost) {
+    fun requestConnectToHost(host: DiscoveredLanHost, replaceExistingMobile: Boolean = false) {
         val current = _state.value
         if (current.pendingConnectSasCode != null && current.pendingConnectOrigin == host.origin) {
             return
@@ -277,9 +369,23 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     pairingClient.requestConnect(
                         origin = origin,
                         deviceName = Build.MODEL.ifBlank { "Android Companion" },
+                        replaceExistingMobile = replaceExistingMobile,
                     )
                 }
             }.getOrElse { err ->
+                if (err is MobileDeviceConflictException) {
+                    pendingConflictRetryAction = {
+                        requestConnectToHost(host, replaceExistingMobile = true)
+                    }
+                    _state.update {
+                        it.copy(
+                            pairing = false,
+                            pendingConflictDeviceName = err.existingDeviceName,
+                            error = null,
+                        )
+                    }
+                    return@launch
+                }
                 _state.update { it.copy(pairing = false) }
                 fail(err)
                 return@launch
@@ -458,23 +564,86 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun pairFromRaw(raw: String) {
+    fun pairFromRaw(raw: String, replaceExistingMobile: Boolean = false) {
         viewModelScope.launch {
             _state.update { it.copy(pairing = true, error = null) }
             runCatching {
                 val invitation = PairingInvitationParser.parse(raw)
-                redeemOrMerge(invitation)
-            }.onFailure { fail(it) }
+                redeemOrMerge(invitation, replaceExistingMobile = replaceExistingMobile)
+            }.onFailure { err ->
+                if (err is MobileDeviceConflictException) {
+                    pendingConflictRetryAction = {
+                        pairFromRaw(raw, replaceExistingMobile = true)
+                    }
+                    _state.update {
+                        it.copy(
+                            pairing = false,
+                            pendingConflictDeviceName = err.existingDeviceName,
+                            error = null,
+                        )
+                    }
+                    return@launch
+                }
+                fail(err)
+            }
             _state.update { it.copy(pairing = false) }
         }
     }
 
-    fun pairManual(origin: String, token: String) {
+    fun pairManual(origin: String, token: String, replaceExistingMobile: Boolean = false) {
         viewModelScope.launch {
             _state.update { it.copy(pairing = true, error = null) }
             runCatching {
-                redeemOrMerge(PairingInvitationParser.parseManual(origin, token))
-            }.onFailure { fail(it) }
+                val rawToken = token.trim()
+                if (rawToken.startsWith("vibex-pairing:") || rawToken.startsWith("{")) {
+                    redeemOrMerge(
+                        PairingInvitationParser.parse(rawToken),
+                        replaceExistingMobile = replaceExistingMobile,
+                    )
+                } else {
+                    val candidates = LinkedHashSet<String>()
+                    origin.trim().takeIf { it.isNotEmpty() }?.let { candidates.add(it) }
+                    _state.value.discoveredHosts.forEach { candidates.add(it.origin) }
+                    _state.value.activeOrigin?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
+                    _state.value.profiles.mapNotNull { it.lastSuccessOrigin }.forEach { candidates.add(it) }
+                    if (candidates.isEmpty()) {
+                        val autoFound = withContext(Dispatchers.IO) {
+                            runCatching { PairingClient.discoverLanHosts(includeCloudRelay = true) }.getOrDefault(emptyList())
+                        }
+                        autoFound.forEach { candidates.add(it.origin) }
+                    }
+                    val reachability = candidates.mapNotNull { url ->
+                        runCatching { ReachabilityTarget(HostOrigin.parse(url), "manual") }.getOrNull()
+                    }
+                    if (reachability.isEmpty()) {
+                        throw IllegalStateException("未发现在线电脑，请先确认电脑端在线")
+                    }
+                    val invitation = dev.vibex.companion.PairingInvitation(
+                        hostId = null,
+                        preset = "companion",
+                        expiresAt = null,
+                        pairingId = null,
+                        pairingToken = rawToken.uppercase(),
+                        reachability = reachability,
+                    )
+                    redeemOrMerge(invitation, replaceExistingMobile = replaceExistingMobile)
+                }
+            }.onFailure { err ->
+                if (err is MobileDeviceConflictException) {
+                    pendingConflictRetryAction = {
+                        pairManual(origin, token, replaceExistingMobile = true)
+                    }
+                    _state.update {
+                        it.copy(
+                            pairing = false,
+                            pendingConflictDeviceName = err.existingDeviceName,
+                            error = null,
+                        )
+                    }
+                    return@launch
+                }
+                fail(err)
+            }
             _state.update { it.copy(pairing = false) }
         }
     }
@@ -1154,20 +1323,42 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun redeemOrMerge(invitation: dev.vibex.companion.PairingInvitation) {
-        val existing = invitation.hostId?.let { id -> _state.value.profiles.find { it.hostId == id } }
-        if (existing != null) {
-            val merged = (existing.reachability + invitation.reachability.map {
-                StoredReachability(it.origin.value, it.kind)
-            }).distinctBy { it.origin }
-            val updated = existing.copy(reachability = merged)
-            upsertProfile(updated, selected = true)
-            _state.update { it.copy(notice = "已更新地址", route = Route.Conversations) }
-            connect(updated)
-            return
+    private fun handleForcedOfflineByRevocation(hostId: String? = _state.value.selectedHostId) {
+        val targetId = hostId ?: selectedProfile()?.hostId
+        if (!targetId.isNullOrBlank()) {
+            credentials.remove(targetId)
         }
+        val remaining = if (targetId.isNullOrBlank()) emptyList() else _state.value.profiles.filterNot { it.hostId == targetId }
+        persist { it.copy(selectedHostId = remaining.firstOrNull()?.hostId, profiles = remaining) }
+        socket.close()
+        pingJob?.cancel()
+        _state.update {
+            it.copy(
+                profiles = remaining,
+                selectedHostId = remaining.firstOrNull()?.hostId,
+                activeOrigin = null,
+                connection = ConnectionState.Offline,
+                realtimeRttMs = null,
+                connectionFailureReason = "已被其他手机接管下线",
+                conversations = emptyList(),
+                timeline = null,
+                inbox = emptyList(),
+                pairing = false,
+                error = "当前电脑已切换至其他手机远程连接，本机已强制下线并清除凭据，下次需重新连接",
+            )
+        }
+    }
+
+    private suspend fun redeemOrMerge(
+        invitation: dev.vibex.companion.PairingInvitation,
+        replaceExistingMobile: Boolean = false,
+    ) {
         val result = withContext(Dispatchers.IO) {
-            pairing.redeemInvitation(invitation, Build.MODEL)
+            pairing.redeemInvitation(
+                invitation = invitation,
+                deviceName = Build.MODEL,
+                replaceExistingMobile = replaceExistingMobile,
+            )
         }
         credentials.put(result.hostId, result.session.credential.access_token)
         val displayHost = result.session.origin.value
@@ -1197,14 +1388,14 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
         val kind = profile.reachability.find { it.origin == originUrl }?.kind?.lowercase()
         if (kind == "webrtc") return "WebRTC P2P"
-        if (lower.contains("vibex.xforever.xin")) return "VibeX 云服务 · Beta"
+        if (lower.contains("/t/")) return "VibeX 云服务 · Beta"
         if (kind == "published" || kind == "tunnel" || lower.startsWith("https://")) return "云服务 · Beta"
         val isPrivateLan = Regex("""^http://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)
         if (!isPrivateLan) return "云服务 · Beta"
         return "LAN 局域网直连"
     }
 
-    private suspend fun connect(profile: HostProfile) {
+    private suspend fun connect(profile: HostProfile, allowCloudSwitch: Boolean = false) {
         if (
             _state.value.connection == ConnectionState.Online &&
                 _state.value.selectedHostId == profile.hostId &&
@@ -1222,13 +1413,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
         val token = credentials.get(profile.hostId)
         if (token.isNullOrBlank()) {
-            _state.update {
-                it.copy(
-                    connection = ConnectionState.AuthRequired,
-                    realtimeRttMs = null,
-                    connectionFailureReason = "授权已撤销",
-                )
-            }
+            handleForcedOfflineByRevocation(profile.hostId)
             return
         }
         val targets = profile.reachability.map {
@@ -1251,17 +1436,21 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 Regex("""^http://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)
         }
 
+        val wasLanMode = !allowCloudSwitch &&
+            profile.lastSuccessOrigin != null &&
+            isLanOriginUrl(profile.lastSuccessOrigin)
+
         suspend fun tryConnectOrigin(origin: HostOrigin): Boolean {
             tried += origin.value
             val VerifyHost = withContext(Dispatchers.IO) {
                 PairingClient.probeHostHealth(
                     originUrl = origin.value,
-                    timeoutMs = if (isLanOriginUrl(origin.value)) 350 else 1800,
+                    timeoutMs = if (isLanOriginUrl(origin.value)) 350 else 3500,
                     expectedHostId = profile.hostId.takeUnless { it.startsWith("host:") },
                 )
             }
             if (VerifyHost == null) {
-                throw IllegalStateException("Host health check or tenant identity verification failed for ${origin.value}")
+                throw IllegalStateException("电脑端暂未响应")
             }
             val (caps, serverReachability) = withContext(Dispatchers.IO) {
                 api.capabilitiesWithReachability(origin, token)
@@ -1290,6 +1479,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 StoredReachability(it.origin.value, it.kind)
             }
             val selfKind = if (origin.value.startsWith("https://") || origin.value.contains("/t/")) "published" else "lan"
+            if (selfKind == "lan") {
+                declinedCloudFallbackHostIds.remove(profile.hostId)
+            }
             val mergedReachability = (syncedTargets + profile.reachability + StoredReachability(origin.value, selfKind))
                 .filterNot { it.origin.contains(":17890") }
                 .distinctBy { it.origin }
@@ -1311,6 +1503,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     realtimeRttMs = warmRttMs,
                     transportPath = inferTransportPath(origin.value, updatedProfile),
                     connectionFailureReason = null,
+                    pendingCloudFallbackOrigin = null,
+                    pendingCloudFallbackHostName = null,
                     error = null,
                 )
             }
@@ -1325,22 +1519,36 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             try {
                 if (tryConnectOrigin(origin)) return
             } catch (error: AuthRequiredException) {
-                _state.update {
-                    it.copy(
-                        connection = ConnectionState.AuthRequired,
-                        triedOrigins = tried,
-                        realtimeRttMs = null,
-                        connectionFailureReason = "授权已撤销",
-                    )
-                }
+                handleForcedOfflineByRevocation(profile.hostId)
                 return
             } catch (error: Exception) {
                 lastError = error
             }
         }
 
-        // Happy Eyeballs Step 2: Domestic Cloud Relay / Published origins
+        // Step 2: If LAN IP changed via DHCP on the same Wi-Fi, try LAN discovery before considering Cloud Service
         val knownOriginStrings = profile.reachability.map { it.origin }
+        val discovered = withContext(Dispatchers.IO) {
+            runCatching { PairingClient.discoverLanHosts(extraRelayOrigins = knownOriginStrings, includeCloudRelay = false) }
+                .getOrDefault(emptyList())
+        }
+        val matchedHost = discovered.find { it.hostId == profile.hostId } ?: discovered.firstOrNull {
+            profile.hostId.startsWith("host:")
+        }
+        if (matchedHost != null && !tried.contains(matchedHost.origin) && isLanOriginUrl(matchedHost.origin)) {
+            runCatching { HostOrigin.parse(matchedHost.origin) }.getOrNull()?.let { discoveredOrigin ->
+                try {
+                    if (tryConnectOrigin(discoveredOrigin)) return
+                } catch (error: AuthRequiredException) {
+                    handleForcedOfflineByRevocation(profile.hostId)
+                    return
+                } catch (error: Exception) {
+                    lastError = error
+                }
+            }
+        }
+
+        // Step 3: Domestic Cloud Relay / Published origins
         val rendezvousOrigins = withContext(Dispatchers.IO) {
             runCatching { PairingClient.resolveHostRendezvous(profile.hostId, knownOrigins = knownOriginStrings) }
                 .getOrDefault(emptyList())
@@ -1354,47 +1562,41 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 lower.contains(":17891")
         }
         val combinedRemote = (rendezvousOrigins + cleanRemoteCandidates).distinct()
-        for (rawOrigin in combinedRemote) {
-            if (tried.contains(rawOrigin)) continue
-            val parsedOrigin = runCatching { HostOrigin.parse(rawOrigin) }.getOrNull() ?: continue
-            try {
-                if (tryConnectOrigin(parsedOrigin)) return
-            } catch (error: AuthRequiredException) {
-                _state.update {
-                    it.copy(
-                        connection = ConnectionState.AuthRequired,
-                        triedOrigins = tried,
-                        realtimeRttMs = null,
-                        connectionFailureReason = "授权已撤销",
+
+        // If previously connected via LAN direct, ask the user before switching to Cloud Service!
+        if (wasLanMode) {
+            for (rawOrigin in combinedRemote) {
+                val reachable = withContext(Dispatchers.IO) {
+                    PairingClient.probeHostHealth(
+                        originUrl = rawOrigin,
+                        timeoutMs = 2200,
+                        expectedHostId = profile.hostId.takeUnless { it.startsWith("host:") },
                     )
                 }
-                return
-            } catch (error: Exception) {
-                lastError = error
-            }
-        }
-
-        // Step 3: If LAN IP changed via DHCP or AP-isolated same-net relay discovery
-        val discovered = withContext(Dispatchers.IO) {
-            runCatching { PairingClient.discoverLanHosts(extraRelayOrigins = knownOriginStrings) }
-                .getOrDefault(emptyList())
-        }
-        val matchedHost = discovered.find { it.hostId == profile.hostId } ?: discovered.firstOrNull {
-            profile.hostId.startsWith("host:")
-        }
-        if (matchedHost != null && !tried.contains(matchedHost.origin)) {
-            runCatching { HostOrigin.parse(matchedHost.origin) }.getOrNull()?.let { discoveredOrigin ->
-                try {
-                    if (tryConnectOrigin(discoveredOrigin)) return
-                } catch (error: AuthRequiredException) {
+                if (reachable != null) {
+                    val shouldPrompt = profile.hostId !in declinedCloudFallbackHostIds
                     _state.update {
                         it.copy(
-                            connection = ConnectionState.AuthRequired,
+                            connection = ConnectionState.Offline,
                             triedOrigins = tried,
                             realtimeRttMs = null,
-                            connectionFailureReason = "授权已撤销",
+                            connectionFailureReason = "局域网已断开",
+                            pendingCloudFallbackOrigin = if (shouldPrompt) reachable.origin else it.pendingCloudFallbackOrigin,
+                            pendingCloudFallbackHostName = if (shouldPrompt) profile.name else it.pendingCloudFallbackHostName,
+                            error = null,
                         )
                     }
+                    return
+                }
+            }
+        } else {
+            for (rawOrigin in combinedRemote) {
+                if (tried.contains(rawOrigin)) continue
+                val parsedOrigin = runCatching { HostOrigin.parse(rawOrigin) }.getOrNull() ?: continue
+                try {
+                    if (tryConnectOrigin(parsedOrigin)) return
+                } catch (error: AuthRequiredException) {
+                    handleForcedOfflineByRevocation(profile.hostId)
                     return
                 } catch (error: Exception) {
                     lastError = error
@@ -1415,7 +1617,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 triedOrigins = tried,
                 realtimeRttMs = null,
                 connectionFailureReason = failureReason,
-                error = lastError?.message,
+                error = null,
             )
         }
     }
@@ -1454,12 +1656,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             },
             onClosed = { reason ->
                 if (reason == "auth") {
-                    _state.update {
-                        it.copy(
-                            connection = ConnectionState.AuthRequired,
-                            realtimeRttMs = null,
-                            connectionFailureReason = "授权已撤销",
-                        )
+                    viewModelScope.launch {
+                        handleForcedOfflineByRevocation()
                     }
                 } else if (_state.value.connection == ConnectionState.Online) {
                     _state.update { it.copy(connection = ConnectionState.Recovering) }
@@ -1474,22 +1672,24 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         )
         pingJob?.cancel()
         pingJob = viewModelScope.launch {
-            var tick = 0
             while (isActive) {
-                delay(10_000)
+                delay(4_000)
                 socket.ping()
-                tick += 1
-                if (tick % 3 == 0) {
-                    val refreshed = withContext(Dispatchers.IO) {
-                        runCatching { api.capabilitiesWithReachability(HostOrigin.parse(origin), token) }.getOrNull()
-                    }
-                    if (refreshed != null) {
-                        val synced = refreshed.second.map { StoredReachability(it.origin.value, it.kind) }
-                        selectedProfile()?.let { currentProfile ->
-                            val merged = (synced + currentProfile.reachability).distinctBy { it.origin }
-                            if (merged != currentProfile.reachability) {
-                                upsertProfile(currentProfile.copy(reachability = merged), true)
-                            }
+                val refreshedResult = withContext(Dispatchers.IO) {
+                    runCatching { api.capabilitiesWithReachability(HostOrigin.parse(origin), token) }
+                }
+                val failure = refreshedResult.exceptionOrNull()
+                if (failure is AuthRequiredException) {
+                    handleForcedOfflineByRevocation()
+                    break
+                }
+                val refreshed = refreshedResult.getOrNull()
+                if (refreshed != null) {
+                    val synced = refreshed.second.map { StoredReachability(it.origin.value, it.kind) }
+                    selectedProfile()?.let { currentProfile ->
+                        val merged = (synced + currentProfile.reachability).distinctBy { it.origin }
+                        if (merged != currentProfile.reachability) {
+                            upsertProfile(currentProfile.copy(reachability = merged), true)
                         }
                     }
                 }
@@ -1932,13 +2132,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     internal fun fail(error: Throwable) {
         if (error is AuthRequiredException) {
-            _state.update { it.copy(connection = ConnectionState.AuthRequired, error = "需要重新配对", pairing = false) }
+            handleForcedOfflineByRevocation()
             return
         }
         val raw = error.message.orEmpty()
         val message = when {
             raw.contains("is not registered") -> "电脑端需要更新后重启"
             raw.contains("timeout", true) || raw.contains("timed out", true) -> "连接超时"
+            raw.contains("Host health check", true) ||
+                raw.contains("/t/") -> "电脑端暂未响应，请确认电脑在线"
             raw.isBlank() -> "请求失败"
             else -> raw
         }
