@@ -25,12 +25,15 @@ object OriginOrder {
     private fun originPriority(url: String, lastSuccess: String?): Int {
         if (lastSuccess != null && url == lastSuccess) return 0
         val lower = url.lowercase()
+        // Deprioritize proxy TUN / Fake-IP benchmarking range (198.18.0.0/15)
+        if (Regex("""^https?://198\.1[89]\.""").containsMatchIn(lower)) return 60
         // Deprioritize IPv6 ULA (fd00::/8) and link-local (fe80::/10) which often fail across LAN/USB
         if (lower.contains("://[fd") || lower.contains("://[fe80")) return 50
+        // Try 127.0.0.1 first: succeeds in ~2ms when USB `adb reverse` is active,
+        // or fails immediately (<1ms ECONNREFUSED) when USB is not used.
+        if (lower.contains("://127.0.0.1") || lower.contains("://localhost")) return 5
         // Prioritize IPv4 private LAN addresses (192.168.x.x, 10.x.x.x, 172.16-31.x.x)
         if (Regex("""^https?://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)) return 10
-        // Next try 127.0.0.1 (works immediately when `adb reverse` is active)
-        if (lower.contains("://127.0.0.1") || lower.contains("://localhost")) return 20
         if (lower.startsWith("https://")) return 30
         return 40
     }

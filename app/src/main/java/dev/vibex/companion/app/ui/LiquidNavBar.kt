@@ -1,8 +1,12 @@
 package dev.vibex.companion.app.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +22,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -45,6 +55,8 @@ data class LiquidTab(
 @Composable
 fun LiquidNavBar(tabs: List<LiquidTab>, modifier: Modifier = Modifier) {
     val colors = VibexTheme.colors
+    val haptic = LocalHapticFeedback.current
+    val focusManager = LocalFocusManager.current
     Column(
         modifier
             .fillMaxWidth()
@@ -66,16 +78,37 @@ fun LiquidNavBar(tabs: List<LiquidTab>, modifier: Modifier = Modifier) {
         ) {
             tabs.forEach { tab ->
                 val tint = if (tab.selected) colors.accent else colors.textSecondary
+                val interactionSource = remember { MutableInteractionSource() }
+                val pressed by interactionSource.collectIsPressedAsState()
+                val scale by animateFloatAsState(
+                    targetValue = if (pressed) 0.92f else 1f,
+                    animationSpec = spring(stiffness = 600f),
+                    label = "tabScale",
+                )
                 Column(
                     Modifier
                         .weight(1f)
                         .fillMaxHeight()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
                         .semantics {
                             contentDescription = tab.label
                             role = Role.Tab
                             selected = tab.selected
                         }
-                        .clickable(onClick = tab.onClick)
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClick = {
+                                if (!tab.selected) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                                focusManager.clearFocus()
+                                tab.onClick()
+                            },
+                        )
                         .padding(top = 6.dp, bottom = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
                     verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),

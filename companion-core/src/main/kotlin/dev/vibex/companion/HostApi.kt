@@ -101,6 +101,14 @@ class HostApi(
             request(origin, token, "GET", "/api/v1/capabilities", null),
         )
 
+    fun capabilitiesWithReachability(
+        origin: HostOrigin,
+        token: String,
+    ): Pair<dev.vibex.remote.v1.ServerCapabilities, List<ReachabilityTarget>> {
+        val body = request(origin, token, "GET", "/api/v1/capabilities", null)
+        return parseServerCapabilities(body) to parseServerReachability(body)
+    }
+
     fun revoke(origin: HostOrigin, token: String, deviceId: String) {
         request(origin, token, "DELETE", "/api/v1/auth/devices/$deviceId", null)
     }
@@ -230,7 +238,82 @@ class HostApi(
             if (name.isBlank()) null else WorkspaceEntry(
                 name = name,
                 path = obj.textAny("path").ifBlank { name },
-                directory = obj.boolOrNull("directory") ?: false,
+                directory = obj.boolOrNull("directory") ?: (obj.boolOrNull("isDirectory") ?: (obj.boolOrNull("is_directory") ?: false)),
+            )
+        }
+    }
+
+    fun workspaceTree(origin: HostOrigin, token: String, workspaceId: String, path: String = ""): WorkspaceTree {
+        val data = runCatching {
+            call(
+                origin,
+                token,
+                "conversation_workspace_tree",
+                mapOf("workspaceId" to workspaceId, "path" to path),
+            )
+        }.getOrNull()?.asObject()
+        if (data == null) {
+            val fallback = if (path.isBlank()) listWorkspaceEntries(origin, token, workspaceId) else emptyList()
+            return WorkspaceTree(path = path, entries = fallback, truncated = false)
+        }
+        val entries = data.arrOrNull("entries").orEmpty().mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val name = obj.textAny("name")
+            if (name.isBlank()) return@mapNotNull null
+            val isDir = obj.boolOrNull("directory")
+                ?: obj.boolOrNull("isDirectory")
+                ?: obj.boolOrNull("is_directory")
+                ?: (obj.textAny("kind") == "directory")
+            WorkspaceEntry(
+                name = name,
+                path = obj.textAny("path").ifBlank { if (path.isBlank()) name else "$path/$name" },
+                directory = isDir,
+            )
+        }
+        return WorkspaceTree(
+            path = data.textAny("path").ifBlank { path },
+            entries = entries,
+            truncated = data.boolOrNull("truncated") ?: false,
+        )
+    }
+
+    fun workspaceFile(origin: HostOrigin, token: String, workspaceId: String, path: String): WorkspaceFile {
+        val data = call(
+            origin,
+            token,
+            "conversation_workspace_file",
+            mapOf("workspaceId" to workspaceId, "path" to path),
+        ).asObject() ?: return WorkspaceFile(path = path, size = 0, binary = false, truncated = false, content = null)
+        return WorkspaceFile(
+            path = data.textAny("path").ifBlank { path },
+            size = (data.longOrNull("size") ?: 0L).toInt(),
+            binary = data.boolOrNull("binary") ?: (data.boolOrNull("is_binary") ?: false),
+            truncated = data.boolOrNull("truncated") ?: false,
+            content = data.textOrNull("content"),
+        )
+    }
+
+    fun workspaceDiff(origin: HostOrigin, token: String, workspaceId: String, conversationId: String = ""): List<FileDiff> {
+        val raw = runCatching {
+            val args = linkedMapOf<String, Any?>()
+            if (workspaceId.isNotBlank()) args["workspaceId"] = workspaceId
+            if (conversationId.isNotBlank()) args["conversationId"] = conversationId
+            call(origin, token, "conversation_workspace_diff", args)
+        }.getOrNull()
+        val items = raw?.asArray()?.value ?: raw?.asObject()?.arrOrNull("files", "diffs", "items").orEmpty()
+        return items.mapNotNull { item ->
+            val obj = item.asObject() ?: return@mapNotNull null
+            val path = obj.textAny("path", "filePath", "file_path", "name")
+            if (path.isBlank()) return@mapNotNull null
+            val diff = obj.textAny("diff", "patch", "content")
+            val isBinary = obj.boolOrNull("is_binary") ?: (obj.boolOrNull("binary") ?: false)
+            val truncated = obj.boolOrNull("truncated") ?: false
+            FileDiff.fromEntry(
+                path = path,
+                status = obj.textAny("status", "kind").ifBlank { "M" },
+                diff = diff,
+                isBinary = isBinary,
+                truncated = truncated,
             )
         }
     }
@@ -415,8 +498,18 @@ class HostApi(
         token: String,
         conversationId: String,
         permissionId: String,
-        optionId: String,
+        optionId: String?,
+        persist: Boolean = false,
     ) {
+        val response: Map<String, Any?> = if (!optionId.isNullOrBlank()) {
+            buildMap {
+                put("kind", "selected")
+                put("option_id", optionId)
+                if (persist) put("persist", true)
+            }
+        } else {
+            mapOf("kind" to "cancelled")
+        }
         call(
             origin,
             token,
@@ -425,10 +518,7 @@ class HostApi(
                 "request" to mapOf(
                     "conversationId" to conversationId,
                     "permissionId" to permissionId,
-                    "response" to mapOf(
-                        "kind" to "selected",
-                        "option_id" to optionId,
-                    ),
+                    "response" to response,
                 ),
             ),
         )
@@ -441,6 +531,30 @@ class HostApi(
         questionId: String,
         content: String,
     ) {
+        respondQuestion(
+            origin = origin,
+            token = token,
+            conversationId = conversationId,
+            questionId = questionId,
+            content = JsonValue.Object(mapOf("text" to JsonValue.Text(content))),
+        )
+    }
+
+    fun respondQuestion(
+        origin: HostOrigin,
+        token: String,
+        conversationId: String,
+        questionId: String,
+        content: JsonValue?,
+    ) {
+        val response: Map<String, Any?> = if (content != null) {
+            mapOf(
+                "action" to "accept",
+                "content" to content,
+            )
+        } else {
+            mapOf("action" to "decline")
+        }
         call(
             origin,
             token,
@@ -449,10 +563,7 @@ class HostApi(
                 "request" to mapOf(
                     "conversationId" to conversationId,
                     "questionId" to questionId,
-                    "response" to mapOf(
-                        "action" to "accept",
-                        "content" to mapOf("text" to content),
-                    ),
+                    "response" to response,
                 ),
             ),
         )
@@ -568,15 +679,16 @@ class HostApi(
     }
 
     fun collaboration(origin: HostOrigin, token: String, operation: String, input: Map<String, Any?>): JsonValue {
-        val body = encodeObject(
-            mapOf(
-                "operation_id" to UUID.randomUUID().toString(),
+        return call(
+            origin = origin,
+            token = token,
+            command = "collaboration_call",
+            args = mapOf(
+                "capability" to "collaboration",
+                "operation" to operation,
                 "input" to input,
             ),
         )
-        val response = request(origin, token, "POST", "/api/v1/collaboration/$operation", body)
-        val root = JsonValue.parse(response) as? JsonValue.Object ?: return JsonValue.Null
-        return root.value["data"] ?: root
     }
 
     fun listCollaborationThreads(

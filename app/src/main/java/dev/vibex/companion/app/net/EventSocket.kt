@@ -16,17 +16,21 @@ import java.util.concurrent.TimeUnit
 
 class EventSocket(
     private val http: OkHttpClient = OkHttpClient.Builder()
+        .socketFactory(TcpNoDelaySocketFactory)
         .pingInterval(20, TimeUnit.SECONDS)
         .readTimeout(0, TimeUnit.MILLISECONDS)
         .build(),
 ) {
     private var socket: WebSocket? = null
     private var generation = 0
+    @Volatile
+    private var lastPingSentNs: Long = 0L
 
     fun connect(
         origin: String,
         token: String,
         onOpen: () -> Unit = {},
+        onPongRttMs: (Long) -> Unit = {},
         onEvent: (String, RemoteEvent) -> Unit,
         onSnapshot: (String, JsonValue) -> Unit,
         onClosed: (String?) -> Unit,
@@ -43,12 +47,22 @@ class EventSocket(
         socket = http.newWebSocket(request, object : WebSocketListener() {
             private fun live(): Boolean = session == generation
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                if (live()) onOpen()
+                if (live()) {
+                    ping()
+                    onOpen()
+                }
             }
             override fun onMessage(webSocket: WebSocket, text: String) {
                 if (!live()) return
                 val root = runCatching { JsonValue.parse(text) as JsonValue.Object }.getOrNull() ?: return
                 when (root.value["type"]?.asText()) {
+                    "pong" -> {
+                        val sentNs = lastPingSentNs
+                        if (sentNs > 0L) {
+                            val rttMs = ((System.nanoTime() - sentNs) / 1_000_000L).coerceAtLeast(1L)
+                            onPongRttMs(rttMs)
+                        }
+                    }
                     "event" -> {
                         val sub = root.value["subscription_id"]?.asText() ?: return
                         val ev = root.value["event"]?.asObject() ?: return
@@ -89,6 +103,7 @@ class EventSocket(
     }
 
     fun ping() {
+        lastPingSentNs = System.nanoTime()
         socket?.send("""{"type":"ping"}""")
     }
 

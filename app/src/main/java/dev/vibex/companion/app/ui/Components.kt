@@ -137,13 +137,6 @@ fun PrimaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Modif
 }
 
 @Composable
-fun SecondaryButton(label: String, onClick: () -> Unit, modifier: Modifier = Modifier, enabled: Boolean = true) {
-    OutlinedButton(onClick = onClick, enabled = enabled, modifier = modifier.fillMaxWidth().height(52.dp), shape = ShapeControl) {
-        Text(label, style = MaterialTheme.typography.labelLarge)
-    }
-}
-
-@Composable
 fun GlassCard(modifier: Modifier = Modifier, padding: Dp = 0.dp, content: @Composable ColumnScope.() -> Unit) {
     val colors = VibexTheme.colors
     Column(
@@ -208,6 +201,23 @@ fun PressSurface(
     )
 }
 
+private val agentAssetCache = java.util.concurrent.ConcurrentHashMap<String, ByteArray>()
+@Volatile
+private var sharedSvgImageLoader: coil.ImageLoader? = null
+
+private fun getSvgImageLoader(context: android.content.Context): coil.ImageLoader {
+    sharedSvgImageLoader?.let { return it }
+    synchronized(agentAssetCache) {
+        sharedSvgImageLoader?.let { return it }
+        val loader = coil.ImageLoader.Builder(context.applicationContext)
+            .components { add(coil.decode.SvgDecoder.Factory()) }
+            .crossfade(false)
+            .build()
+        sharedSvgImageLoader = loader
+        return loader
+    }
+}
+
 @Composable
 fun AgentAvatar(agentId: String, size: Dp = 28.dp, iconSvg: String? = null, displayName: String = "") {
     val colors = VibexTheme.colors
@@ -215,21 +225,27 @@ fun AgentAvatar(agentId: String, size: Dp = 28.dp, iconSvg: String? = null, disp
     val asset = remember(agentId, colors.isDark) { bundledAgentAsset(agentId, colors.isDark) }
     val bytes = remember(asset, iconSvg) {
         if (asset != null) {
-            runCatching { context.assets.open("agents/$asset").use { it.readBytes() } }.getOrNull()
+            agentAssetCache[asset] ?: runCatching {
+                context.assets.open("agents/$asset").use { it.readBytes() }.also {
+                    agentAssetCache[asset] = it
+                }
+            }.getOrNull()
         } else {
             iconSvg?.takeIf { it.contains("<svg", true) }?.toByteArray()
         }
     }
     if (bytes != null) {
-        val request = remember(bytes.contentHashCode(), size) {
+        val loader = remember(context) { getSvgImageLoader(context) }
+        val request = remember(asset ?: iconSvg, size) {
             coil.request.ImageRequest.Builder(context)
                 .data(bytes)
-                .decoderFactory(coil.decode.SvgDecoder.Factory())
+                .memoryCacheKey("agent_svg:${asset ?: iconSvg.hashCode()}:${size.value}")
                 .crossfade(false)
                 .build()
         }
         coil.compose.AsyncImage(
             model = request,
+            imageLoader = loader,
             contentDescription = displayName.ifBlank { agentId },
             contentScale = ContentScale.Fit,
             modifier = Modifier.size(size),
@@ -264,26 +280,8 @@ fun FolderBadge(id: String, size: Dp = 40.dp) {
 }
 
 @Composable
-fun SettingsIconBadge(icon: ImageVector, tint: Color = VibexTheme.colors.textPrimary, size: Dp = 22.dp) {
-    Icon(icon, null, tint = tint, modifier = Modifier.size(size))
-}
-
-@Composable
 fun StatusDot(color: Color, modifier: Modifier = Modifier) {
     Box(modifier.size(9.dp).clip(CircleShape).background(color))
-}
-
-@Composable
-fun Banner(text: String, color: Color, onClick: () -> Unit) {
-    Text(text, color = color, style = MaterialTheme.typography.bodyMedium, modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 8.dp))
-}
-
-@Composable
-fun CompactSendButton(label: String, onClick: () -> Unit, enabled: Boolean) {
-    val colors = VibexTheme.colors
-    Button(onClick = onClick, enabled = enabled, modifier = Modifier.height(48.dp), shape = ShapeControl, colors = ButtonDefaults.buttonColors(containerColor = colors.accent, contentColor = colors.onAccent)) {
-        Text(label, style = MaterialTheme.typography.labelLarge)
-    }
 }
 
 
@@ -411,9 +409,10 @@ fun ConnectionChip(connection: ConnectionState, hostName: String?) {
         ConnectionState.Online -> "在线" to colors.pass
         ConnectionState.Connecting -> "正在连接" to colors.accent
         ConnectionState.Recovering -> "正在恢复" to colors.hold
-        ConnectionState.AuthRequired -> "需要重新配对" to colors.danger
+        ConnectionState.HostSleeping -> "电脑已休眠" to colors.hold
+        ConnectionState.AuthRequired -> "授权已撤销" to colors.danger
         ConnectionState.Incompatible -> "版本不兼容" to colors.danger
-        ConnectionState.Offline -> "离线" to colors.textTertiary
+        ConnectionState.Offline -> "电脑离线" to colors.textTertiary
     }
     Row(
         Modifier
@@ -484,9 +483,10 @@ fun connectionLabel(connection: ConnectionState): String = when (connection) {
     ConnectionState.Online -> "在线"
     ConnectionState.Connecting -> "正在连接"
     ConnectionState.Recovering -> "正在恢复"
-    ConnectionState.AuthRequired -> "需要重新配对"
+    ConnectionState.HostSleeping -> "电脑已休眠"
+    ConnectionState.AuthRequired -> "授权已撤销"
     ConnectionState.Incompatible -> "版本不兼容"
-    ConnectionState.Offline -> "离线"
+    ConnectionState.Offline -> "电脑离线"
 }
 
 

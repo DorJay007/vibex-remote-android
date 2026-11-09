@@ -10,9 +10,11 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -33,9 +35,14 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -66,6 +73,9 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
     val isPairModal = state.route is Route.Onboarding || state.route is Route.ManualPair
     val settingsSub = (state.route as? Route.Settings)?.section != null
     val inCollabChat = state.route is Route.Collaboration && state.selectedThread != null
+    var isConversationsChromeHidden by remember { mutableStateOf(false) }
+    var isCollabChatOpen by remember { mutableStateOf(false) }
+    val isKeyboardVisible = WindowInsets.ime.getBottom(LocalDensity.current) > 0
 
     BackHandler(enabled = fullscreen || isPairModal || settingsSub || inCollabChat || state.route is Route.Folders) {
         when {
@@ -141,6 +151,8 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
                     )
                     Route.Folders -> if (!hasServer || authExpired) {
                         RequiresServerView(
+                            state = state,
+                            model = model,
                             authExpired = authExpired,
                             onScan = launchScanner,
                             onManualPair = { model.go(Route.ManualPair) },
@@ -150,6 +162,8 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
                     }
                     Route.Status -> if (!hasServer || authExpired) {
                         RequiresServerView(
+                            state = state,
+                            model = model,
                             authExpired = authExpired,
                             onScan = launchScanner,
                             onManualPair = { model.go(Route.ManualPair) },
@@ -159,26 +173,43 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
                     }
                     Route.Collaboration -> if (!hasServer || authExpired) {
                         RequiresServerView(
+                            state = state,
+                            model = model,
                             authExpired = authExpired,
                             onScan = launchScanner,
                             onManualPair = { model.go(Route.ManualPair) },
                         )
                     } else {
-                        CollaborationScreen(state, model)
+                        CollaborationScreen(
+                            state = state,
+                            model = model,
+                            onChatOpenChange = { isCollabChatOpen = it },
+                        )
                     }
                     is Route.Timeline -> TimelinePane(state, model, route.conversationId)
                     else -> if (!hasServer || authExpired) {
                         RequiresServerView(
+                            state = state,
+                            model = model,
                             authExpired = authExpired,
                             onScan = launchScanner,
                             onManualPair = { model.go(Route.ManualPair) },
                         )
                     } else {
-                        ConversationList(state, model)
+                        ConversationList(
+                            state = state,
+                            model = model,
+                            onChromeHiddenChange = { isConversationsChromeHidden = it },
+                        )
                     }
                 }
             }
-            if (!fullscreen && !inCollabChat) {
+            val hideBottomBar = fullscreen ||
+                inCollabChat ||
+                (state.route is Route.Collaboration && isCollabChatOpen) ||
+                (state.route is Route.Conversations && isConversationsChromeHidden) ||
+                isKeyboardVisible
+            if (!hideBottomBar) {
                 LiquidNavBar(tabs = tabs)
             }
         }
@@ -187,36 +218,133 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
 
 @Composable
 fun RequiresServerView(
+    state: UiState,
+    model: CompanionModel,
     authExpired: Boolean,
     onScan: () -> Unit,
     onManualPair: () -> Unit,
 ) {
     val colors = VibexTheme.colors
-    Box(Modifier.fillMaxSize().padding(horizontal = 32.dp), contentAlignment = Alignment.Center) {
+    Box(Modifier.fillMaxSize().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
         Column(
             horizontalAlignment = Alignment.CenterHorizontally,
             verticalArrangement = Arrangement.spacedBy(14.dp),
+            modifier = Modifier.fillMaxWidth(),
         ) {
             Icon(
                 if (authExpired) Icons.Rounded.KeyOff else Icons.Rounded.Computer,
                 contentDescription = null,
-                tint = colors.textTertiary,
+                tint = if (state.pendingConnectSasCode != null) colors.accent else colors.textTertiary,
                 modifier = Modifier.size(48.dp),
             )
             Text(
-                if (authExpired) "连接凭据已失效" else "尚未连接电脑",
+                when {
+                    state.pendingConnectSasCode != null ->
+                        "等待电脑「${state.pendingConnectHostName ?: "VibeX"}」确认"
+                    authExpired -> "连接凭据已失效"
+                    state.discoveredHosts.isNotEmpty() -> "发现在线电脑"
+                    else -> "尚未连接电脑"
+                },
                 fontSize = 20.sp,
                 fontWeight = FontWeight.Bold,
                 color = colors.textPrimary,
                 textAlign = TextAlign.Center,
             )
-            Text(
-                if (authExpired) "桌面端配对已更新或过期，请重新扫码或使用连接码配对。"
-                else "打开桌面端 VibeX → 设置 → 远程连接，扫码或粘贴连接码即可连接工作站。",
-                fontSize = 13.5.sp,
-                color = colors.textSecondary,
-                textAlign = TextAlign.Center,
-            )
+
+            if (state.pendingConnectSasCode != null) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.card)
+                        .border(0.75.dp, colors.stroke, RoundedCornerShape(14.dp))
+                        .padding(horizontal = 18.dp, vertical = 16.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "请在电脑端顶部提示条点击「连接」",
+                        fontSize = 13.5.sp,
+                        color = colors.textSecondary,
+                        textAlign = TextAlign.Center,
+                    )
+                    Text(
+                        "核对码 ${state.pendingConnectSasCode}",
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.accent,
+                    )
+                    state.pendingConnectOrigin?.takeIf {
+                        !it.contains("vibex.xforever.xin", ignoreCase = true) && !it.contains("/t/")
+                    }?.let {
+                        Text(it, fontSize = 11.5.sp, color = colors.textTertiary)
+                    }
+                    Text(
+                        "取消等待",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.textSecondary,
+                        modifier = Modifier
+                            .padding(top = 4.dp)
+                            .clickable { model.cancelPendingConnectRequest() },
+                    )
+                }
+            } else if (state.discoveredHosts.isNotEmpty()) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.card)
+                        .border(0.75.dp, colors.stroke, RoundedCornerShape(14.dp)),
+                ) {
+                    state.discoveredHosts.forEach { host ->
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clickable { model.requestConnectToHost(host) }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            val isCloudHost = host.origin.contains("vibex.xforever.xin", ignoreCase = true) ||
+                                host.origin.startsWith("https://", ignoreCase = true)
+                            Icon(Icons.Rounded.Computer, null, tint = colors.accent, modifier = Modifier.size(20.dp))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    host.name.removeSuffix(".local").ifBlank { "VibeX 桌面端" },
+                                    fontSize = 14.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.textPrimary,
+                                )
+                                Text(
+                                    if (isCloudHost) "VibeX 云服务 · Beta" else host.origin,
+                                    fontSize = 11.5.sp,
+                                    color = if (isCloudHost) colors.accent else colors.textSecondary,
+                                    maxLines = 1,
+                                )
+                            }
+                            Box(
+                                Modifier
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(colors.accent)
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            ) {
+                                Text("一键连接", fontSize = 12.5.sp, fontWeight = FontWeight.SemiBold, color = colors.onAccent)
+                            }
+                        }
+                    }
+                }
+            } else {
+                Text(
+                    if (authExpired) "桌面端配对已更新或撤销，可在同一局域网自动发现电脑一键连接，或重新扫码配对。"
+                    else if (state.discoveringHosts) "正在自动搜索同一网络下在线的 VibeX 电脑…"
+                    else "电脑端 VibeX 在线时将自动发现并弹窗连接；也可扫码或输入连接码配对。",
+                    fontSize = 13.5.sp,
+                    color = colors.textSecondary,
+                    textAlign = TextAlign.Center,
+                )
+            }
+
             Spacer(Modifier.height(4.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.CenterVertically) {
                 Row(
@@ -251,6 +379,14 @@ fun RequiresServerView(
                         color = colors.accent,
                     )
                 }
+            }
+            if (!state.discoveringHosts && state.pendingConnectSasCode == null) {
+                Text(
+                    "重新扫描局域网电脑",
+                    fontSize = 12.5.sp,
+                    color = colors.accent,
+                    modifier = Modifier.clickable { model.discoverHosts(autoRequestIfSingle = true) },
+                )
             }
         }
     }

@@ -86,10 +86,29 @@ object EventFold {
                     val files = summary.arrOrNull("files").orEmpty()
                     var additions = 0L
                     var deletions = 0L
+                    val parsedFiles = mutableListOf<FileChangeItem>()
                     files.forEach { item ->
                         val f = item.asObject() ?: return@forEach
-                        additions += f.longOrNull("additions") ?: 0L
-                        deletions += f.longOrNull("deletions") ?: 0L
+                        val add = f.longOrNull("additions") ?: 0L
+                        val del = f.longOrNull("deletions") ?: 0L
+                        additions += add
+                        deletions += del
+                        val path = f.textAny("path")
+                        if (path.isNotBlank()) {
+                            val hunksList = f.arrOrNull("hunks").orEmpty().mapNotNull { it.asText() }
+                            val hunks = if (hunksList.isNotEmpty()) hunksList.joinToString("\n")
+                            else f.textOrNull("diff") ?: f.textOrNull("patch")
+                            parsedFiles += FileChangeItem(
+                                path = path,
+                                additions = add.toInt(),
+                                deletions = del.toInt(),
+                                hunks = hunks,
+                            )
+                        }
+                    }
+                    if (parsedFiles.isNotEmpty()) {
+                        session.fileChanges.clear()
+                        session.fileChanges.addAll(parsedFiles)
                     }
                     session.additions = additions
                     session.deletions = deletions
@@ -122,9 +141,14 @@ object EventFold {
                     val role = turn.textAny("role").lowercase()
                     val phase = inner.textAny("phase").lowercase()
                     val isLastTurn = rowIndex == totalRows - 1
+                    if (isLastTurn && phase == "streaming" && session.inFlightTurnId == null) {
+                        session.inFlightTurnId = turnId
+                    }
                     val isStreaming = phase == "streaming" || (isLastTurn && session.inFlightTurnId != null)
                     val turnTone = if (isStreaming) TimelineTone.Live else TimelineTone.Quiet
                     val blocks = turn.arrOrNull("blocks").orEmpty()
+                    val turnModel = turn.textAny("model", "model_id", "modelId").takeIf { it.isNotBlank() }
+                    val turnDurationMs = (turn.longOrNull("duration_ms") ?: turn.longOrNull("durationMs"))?.toInt()
 
                     turn.objOrNull("usage")?.let { usage ->
                         val used = usage.value["context_used"]?.asNumber() ?: usage.value["used"]?.asNumber()
@@ -171,12 +195,16 @@ object EventFold {
                             when (b.textAny("type")) {
                                 "thinking" -> {
                                     val text = b.textAny("text")
+                                    val durationMs = (b.longOrNull("duration_ms") ?: b.longOrNull("durationMs"))?.toInt()
+                                        ?: turnDurationMs
                                     if (text.isNotBlank()) {
                                         val prev = transcriptRows.lastOrNull()
                                         if (prev != null && prev.kind == "reasoning" && prev.turnId == turnId) {
                                             transcriptRows[transcriptRows.lastIndex] = prev.copy(
                                                 body = prev.body + "\n\n" + text,
                                                 tone = turnTone,
+                                                thinkingDurationMs = durationMs ?: prev.thinkingDurationMs,
+                                                modelName = turnModel ?: prev.modelName,
                                             )
                                         } else {
                                             transcriptRows += TimelineRow(
@@ -185,7 +213,9 @@ object EventFold {
                                                 title = "",
                                                 body = text,
                                                 tone = turnTone,
+                                                thinkingDurationMs = durationMs,
                                                 turnId = turnId,
+                                                modelName = turnModel,
                                             )
                                         }
                                     }
@@ -225,6 +255,7 @@ object EventFold {
                                         toolStatus = status,
                                         toolInput = inputPreview,
                                         turnId = turnId,
+                                        modelName = turnModel,
                                     )
                                 }
                                 "text" -> {
@@ -236,6 +267,7 @@ object EventFold {
                                             transcriptRows[transcriptRows.lastIndex] = prev.copy(
                                                 body = prev.body + sep + text,
                                                 tone = turnTone,
+                                                modelName = turnModel ?: prev.modelName,
                                             )
                                         } else {
                                             transcriptRows += TimelineRow(
@@ -245,6 +277,7 @@ object EventFold {
                                                 body = text,
                                                 tone = turnTone,
                                                 turnId = turnId,
+                                                modelName = turnModel,
                                             )
                                         }
                                     }
@@ -253,12 +286,19 @@ object EventFold {
                                     val entries = b.arrOrNull("entries").orEmpty()
                                     if (entries.isNotEmpty()) {
                                         session.planLines.clear()
-                                        entries.forEach { entryItem ->
-                                            val eo = entryItem.asObject() ?: return@forEach
+                                        session.planTasks.clear()
+                                        entries.forEachIndexed { idx, entryItem ->
+                                            val eo = entryItem.asObject() ?: return@forEachIndexed
                                             val status = eo.textOrNull("status")
                                             val content = eo.textOrNull("content") ?: eo.textOrNull("text").orEmpty()
                                             if (content.isNotBlank()) {
                                                 session.planLines += listOfNotNull(status, content).joinToString(" · ")
+                                                session.planTasks += PlanTask(
+                                                    id = idx,
+                                                    label = content,
+                                                    status = parsePlanTaskStatus(status.orEmpty()),
+                                                    priority = eo.textOrNull("priority"),
+                                                )
                                             }
                                         }
                                     }
@@ -411,7 +451,10 @@ object EventFold {
                 }
             }
             "user_turn_queued" -> Unit
-            "user_turn_started" -> session.rows.removeAll { it.id.startsWith("queued-turn:") }
+            "user_turn_started" -> {
+                session.inFlightTurnId = payload.fields("turn_id", "turnId").ifBlank { "running" }
+                session.rows.removeAll { it.id.startsWith("queued-turn:") }
+            }
             "assistant_text_delta" -> appendAssistant(session, payload, body = payload.textOrEmpty("text"))
             "assistant_reasoning_delta" -> appendAssistant(
                 session,
@@ -426,43 +469,77 @@ object EventFold {
             )
             "plan_updated" -> {
                 session.planLines.clear()
-                payload?.arrOrNull("entries").orEmpty().forEach { item ->
-                    val obj = item.asObject() ?: return@forEach
+                session.planTasks.clear()
+                payload?.arrOrNull("entries").orEmpty().forEachIndexed { idx, item ->
+                    val obj = item.asObject() ?: return@forEachIndexed
                     val status = obj.textOrNull("status")
                     val content = obj.textOrNull("content") ?: obj.textOrNull("text").orEmpty()
                     if (content.isNotBlank()) {
                         session.planLines += listOfNotNull(status, content).joinToString(" · ")
+                        session.planTasks += PlanTask(
+                            id = idx,
+                            label = content,
+                            status = parsePlanTaskStatus(status.orEmpty()),
+                            priority = obj.textOrNull("priority"),
+                        )
                     }
                 }
             }
             "tool_call_upsert" -> upsert(session, toolRow(session, event, payload))
-            "permission_requested" -> pending(
-                session,
-                event,
-                payload,
-                PendingKind.Permission,
-                "权限",
-                payload?.objOrNull("request") ?: payload,
-            )
-            "permission_responded" -> resolvePending(session, PendingKind.Permission, payload.fields("permission_id", "permissionId"))
-            "question_requested" -> pending(
-                session,
-                event,
-                payload,
-                PendingKind.Question,
-                "提问",
-                payload?.objOrNull("request") ?: payload,
-            )
-            "question_responded" -> resolvePending(session, PendingKind.Question, payload.fields("question_id", "questionId"))
-            "feedback_requested" -> pending(
-                session,
-                event,
-                payload,
-                PendingKind.Question,
-                "反馈",
-                payload?.objOrNull("request") ?: payload,
-            )
-            "feedback_submitted" -> resolvePending(session, PendingKind.Question, payload.fields("feedback_id", "feedbackId"))
+            "permission_requested" -> {
+                PermissionPrompt.from(event.payload)?.let { session.permissionPrompt = it }
+                pending(
+                    session,
+                    event,
+                    payload,
+                    PendingKind.Permission,
+                    "权限",
+                    payload?.objOrNull("request") ?: payload,
+                )
+            }
+            "permission_responded" -> {
+                val id = payload.fields("permission_id", "permissionId")
+                if (id.isBlank() || session.permissionPrompt?.id == id) {
+                    session.permissionPrompt = null
+                }
+                resolvePending(session, PendingKind.Permission, id)
+            }
+            "question_requested" -> {
+                PendingQuestion.from(event.payload)?.let { session.pendingQuestion = it }
+                pending(
+                    session,
+                    event,
+                    payload,
+                    PendingKind.Question,
+                    "提问",
+                    payload?.objOrNull("request") ?: payload,
+                )
+            }
+            "question_responded" -> {
+                val id = payload.fields("question_id", "questionId")
+                if (id.isBlank() || session.pendingQuestion?.id == id) {
+                    session.pendingQuestion = null
+                }
+                resolvePending(session, PendingKind.Question, id)
+            }
+            "feedback_requested" -> {
+                PendingQuestion.from(event.payload)?.let { session.pendingQuestion = it }
+                pending(
+                    session,
+                    event,
+                    payload,
+                    PendingKind.Question,
+                    "反馈",
+                    payload?.objOrNull("request") ?: payload,
+                )
+            }
+            "feedback_submitted" -> {
+                val id = payload.fields("feedback_id", "feedbackId")
+                if (id.isBlank() || session.pendingQuestion?.id == id) {
+                    session.pendingQuestion = null
+                }
+                resolvePending(session, PendingKind.Question, id)
+            }
             "terminal_updated" -> upsert(
                 session,
                 TimelineRow(
@@ -489,10 +566,29 @@ object EventFold {
                 val files = summary?.arrOrNull("files").orEmpty()
                 var additions = 0L
                 var deletions = 0L
+                val parsedFiles = mutableListOf<FileChangeItem>()
                 files.forEach { item ->
                     val obj = item.asObject() ?: return@forEach
-                    additions += obj.longOrNull("additions") ?: 0
-                    deletions += obj.longOrNull("deletions") ?: 0
+                    val add = obj.longOrNull("additions") ?: 0
+                    val del = obj.longOrNull("deletions") ?: 0
+                    additions += add
+                    deletions += del
+                    val path = obj.textAny("path")
+                    if (path.isNotBlank()) {
+                        val hunksList = obj.arrOrNull("hunks").orEmpty().mapNotNull { it.asText() }
+                        val hunks = if (hunksList.isNotEmpty()) hunksList.joinToString("\n")
+                        else obj.textOrNull("diff") ?: obj.textOrNull("patch")
+                        parsedFiles += FileChangeItem(
+                            path = path,
+                            additions = add.toInt(),
+                            deletions = del.toInt(),
+                            hunks = hunks,
+                        )
+                    }
+                }
+                if (parsedFiles.isNotEmpty()) {
+                    session.fileChanges.clear()
+                    session.fileChanges.addAll(parsedFiles)
                 }
                 session.additions = additions
                 session.deletions = deletions
@@ -561,6 +657,8 @@ object EventFold {
             }
             "turn_completed" -> {
                 session.inFlightTurnId = null
+                session.permissionPrompt = null
+                session.pendingQuestion = null
                 session.notices.removeAll { it.id.startsWith("end:") }
                 session.rows.removeAll { it.kind == "turn_cancelled" }
             }
@@ -836,6 +934,8 @@ object EventFold {
         body: String = "",
     ) {
         session.inFlightTurnId = null
+        session.permissionPrompt = null
+        session.pendingQuestion = null
         val severity = if (tone == TimelineTone.Stop) NoticeSeverity.Error else NoticeSeverity.Info
         upsertNotice(
             session,
@@ -1010,6 +1110,15 @@ object EventFold {
         "hold", "pending" -> TimelineTone.Hold
         "stop", "failed", "error" -> TimelineTone.Stop
         else -> TimelineTone.Quiet
+    }
+
+    private fun parsePlanTaskStatus(raw: String): PlanTask.Status {
+        val s = raw.lowercase()
+        return when {
+            s == "completed" || s == "done" -> PlanTask.Status.Completed
+            s == "in_progress" || s == "inprogress" || s == "running" -> PlanTask.Status.Running
+            else -> PlanTask.Status.Pending
+        }
     }
 
     private fun statusLabel(status: String): String = when (status.lowercase()) {

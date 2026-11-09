@@ -34,13 +34,31 @@ internal fun parseServerCapabilities(body: String): ServerCapabilities {
     )
 }
 
+internal fun parseServerReachability(body: String): List<ReachabilityTarget> {
+    val root = JsonValue.parse(body) as? JsonValue.Object ?: return emptyList()
+    val array = root.value["reachability"] as? JsonValue.Array ?: return emptyList()
+    return array.value.mapNotNull { item ->
+        val obj = item as? JsonValue.Object ?: return@mapNotNull null
+        val originStr = obj.optionalText("origin") ?: return@mapNotNull null
+        val kind = obj.optionalText("kind") ?: "published"
+        val origin = runCatching { HostOrigin.parse(originStr) }.getOrNull() ?: return@mapNotNull null
+        ReachabilityTarget(origin, kind)
+    }
+}
+
 internal fun parseDeviceCredential(body: String): DeviceCredential {
     val root = JsonValue.parse(body) as JsonValue.Object
-    return DeviceCredential(
+    return parseDeviceCredentialObject(root)
+}
+
+internal fun parseDeviceCredentialObject(root: JsonValue.Object): DeviceCredential =
+    DeviceCredential(
         device_id = root.text("device_id"),
         access_token = root.text("access_token"),
         scopes = root.strings("scopes"),
     )
-}
+
+internal fun JsonValue.Object.optionalText(key: String): String? =
+    (value[key] as? JsonValue.Text)?.value?.takeIf { it.isNotBlank() }
 
 internal fun protocolMajor(version: String): String = version.substringBefore('.')

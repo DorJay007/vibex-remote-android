@@ -22,7 +22,12 @@ class PairingCoordinator(
                     ?: "host:${origin.value}"
                 return PairingResult(hostId, session, tried)
             } catch (error: Exception) {
-                if (primaryError == null && !origin.value.contains("[fd", ignoreCase = true)) {
+                if (
+                    primaryError == null &&
+                    !origin.value.contains("[fd", ignoreCase = true) &&
+                    !origin.value.contains("127.0.0.1") &&
+                    !origin.value.contains("localhost", ignoreCase = true)
+                ) {
                     primaryError = error
                 }
                 lastError = error

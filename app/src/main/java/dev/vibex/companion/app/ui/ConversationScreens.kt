@@ -1,5 +1,6 @@
 package dev.vibex.companion.app.ui
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -10,6 +11,8 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -89,6 +92,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.zIndex
 import dev.vibex.companion.ConnectionState
 import dev.vibex.companion.ConversationSummary
+import dev.vibex.companion.SessionConfigChoice
+import dev.vibex.companion.SessionConfigOption
+import dev.vibex.companion.SessionMode
 import dev.vibex.companion.WorkspaceEntry
 import dev.vibex.companion.agentDisplayName
 import dev.vibex.companion.app.CompanionModel
@@ -110,16 +116,31 @@ private val starterSuggestions = listOf(
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ConversationList(state: UiState, model: CompanionModel) {
+fun ConversationList(
+    state: UiState,
+    model: CompanionModel,
+    onChromeHiddenChange: (Boolean) -> Unit = {},
+) {
     val colors = VibexTheme.colors
+    val focusManager = LocalFocusManager.current
     var isSidebarOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(isSidebarOpen) {
+        onChromeHiddenChange(isSidebarOpen)
+        if (isSidebarOpen) focusManager.clearFocus()
+    }
+    BackHandler(enabled = isSidebarOpen) {
+        isSidebarOpen = false
+    }
     var sidebarTab by remember { mutableStateOf("conversations") }
     var sidebarSearch by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
     var selectedAgentId by remember { mutableStateOf<String?>(null) }
-    var showAgentMenu by remember { mutableStateOf(false) }
+    var composerMenu by remember { mutableStateOf<ComposerMenu?>(null) }
+    var landingModeId by remember { mutableStateOf("auto") }
+    var landingEffortValue by remember { mutableStateOf("medium") }
     var showProjectSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
+    var showFileBrowserSheet by remember { mutableStateOf(false) }
     var menuId by remember { mutableStateOf<String?>(null) }
     var menuAnchor by remember { mutableStateOf(Offset.Zero) }
     var expandedProjects by remember { mutableStateOf(setOf<String>()) }
@@ -260,6 +281,10 @@ fun ConversationList(state: UiState, model: CompanionModel) {
             Column(
                 Modifier
                     .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { focusManager.clearFocus() }
                     .padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -339,141 +364,94 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                 }
             }
 
-            // iOS Landing Prompt Bar
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 14.dp, vertical = 10.dp)
-                    .shadow(8.dp, RoundedCornerShape(20.dp), ambientColor = Color.Black.copy(0.06f), spotColor = Color.Black.copy(0.10f))
-                    .clip(RoundedCornerShape(20.dp))
-                    .background(colors.bgElevated)
-                    .border(0.6.dp, colors.stroke, RoundedCornerShape(20.dp))
-                    .padding(horizontal = 14.dp, vertical = 11.dp),
-                verticalArrangement = Arrangement.spacedBy(10.dp),
-            ) {
-                Box(Modifier.fillMaxWidth().padding(vertical = 2.dp)) {
-                    if (draft.isEmpty()) {
-                        Text(
-                            "发消息、@提及或输入 / 调用技能…",
-                            fontSize = 15.sp,
-                            color = colors.textTertiary,
+            // 1:1 reuse of iOS PromptBar (`ConversationsView.swift` landingPromptBar)
+            val resolvedWsId = currentWorkspace?.id?.ifBlank { null }
+                ?: state.conversations.firstOrNull { it.workspaceId.isNotBlank() }?.workspaceId
+            val landingModes = remember {
+                listOf(
+                    SessionMode("manual", "手动审批"),
+                    SessionMode("accept_edits", "自动接受编辑"),
+                    SessionMode("plan", "仅规划"),
+                    SessionMode("auto", "自动"),
+                    SessionMode("bypass", "跳过权限"),
+                )
+            }
+            val landingConfigOptions = remember(agents.size, currentAgent?.id, landingEffortValue) {
+                buildList<SessionConfigOption> {
+                    if (agents.isNotEmpty()) {
+                        add(
+                            SessionConfigOption(
+                                key = "model",
+                                label = "模型",
+                                category = "model",
+                                value = currentAgent?.id ?: "claude_code",
+                                choices = agents.map { a ->
+                                    SessionConfigChoice(
+                                        value = a.id,
+                                        label = agentDisplayName(a.id, a.displayName),
+                                    )
+                                },
+                            ),
                         )
                     }
-                    BasicTextField(
-                        value = draft,
-                        onValueChange = { draft = it },
-                        textStyle = TextStyle(
-                            color = colors.textPrimary,
-                            fontSize = 15.sp,
+                    add(
+                        SessionConfigOption(
+                            key = "reasoning_effort",
+                            label = "推理强度",
+                            category = "thought_level",
+                            value = landingEffortValue,
+                            choices = listOf(
+                                SessionConfigChoice("low", "低"),
+                                SessionConfigChoice("medium", "中"),
+                                SessionConfigChoice("high", "高"),
+                            ),
                         ),
-                        cursorBrush = SolidColor(colors.accent),
-                        maxLines = 5,
-                        modifier = Modifier.fillMaxWidth(),
                     )
                 }
-
-                Row(
-                    Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    // Agent Selector Pill
-                    Box {
-                        Row(
-                            Modifier
-                                .clip(CircleShape)
-                                .background(colors.bg)
-                                .clickable { showAgentMenu = true }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            AgentAvatar(
-                                currentAgent?.id ?: "claude_code",
-                                size = 18.dp,
-                                iconSvg = currentAgent?.iconSvg,
-                                displayName = currentAgent?.displayName.orEmpty(),
-                            )
-                            Text(
-                                agentDisplayName(currentAgent?.id ?: "claude_code", currentAgent?.displayName.orEmpty()),
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = colors.textPrimary,
-                                maxLines = 1,
-                            )
-                            Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
-                        }
-                        DropdownMenu(expanded = showAgentMenu, onDismissRequest = { showAgentMenu = false }) {
-                            agents.forEach { agent ->
-                                DropdownMenuItem(
-                                    text = { Text(agentDisplayName(agent.id, agent.displayName)) },
-                                    leadingIcon = {
-                                        AgentAvatar(agent.id, size = 20.dp, iconSvg = agent.iconSvg, displayName = agent.displayName)
-                                    },
-                                    trailingIcon = if (agent.id == currentAgent?.id) {
-                                        { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                                    } else null,
-                                    onClick = {
-                                        selectedAgentId = agent.id
-                                        showAgentMenu = false
-                                    },
-                                )
-                            }
-                        }
-                    }
-
-                    // Recent conversations quick pill
-                    if (state.conversations.isNotEmpty()) {
-                        Row(
-                            Modifier
-                                .clip(CircleShape)
-                                .background(colors.bg)
-                                .clickable { isSidebarOpen = true }
-                                .padding(horizontal = 10.dp, vertical = 5.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Text(
-                                "历史对话 (${state.conversations.size})",
-                                fontSize = 12.sp,
-                                color = colors.textSecondary,
-                            )
-                        }
-                    }
-
-                    Spacer(Modifier.weight(1f))
-
-                    val resolvedWsId = currentWorkspace?.id?.ifBlank { null }
-                        ?: state.conversations.firstOrNull { it.workspaceId.isNotBlank() }?.workspaceId
-                    val canSend = draft.trim().isNotEmpty() && state.connection.allowsWrites && !resolvedWsId.isNullOrBlank()
-                    Box(
-                        Modifier
-                            .size(32.dp)
-                            .clip(CircleShape)
-                            .background(if (canSend) colors.accent else colors.textTertiary.copy(0.24f))
-                            .clickable(enabled = canSend) {
-                                val text = draft.trim()
-                                val wsId = resolvedWsId ?: return@clickable
-                                val agId = currentAgent?.id ?: "claude_code"
-                                draft = ""
-                                model.createConversation(
-                                    workspaceId = wsId,
-                                    agentId = agId,
-                                    title = text.take(36),
-                                    prompt = text,
-                                )
-                            },
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(
-                            Icons.Rounded.ArrowUpward,
-                            contentDescription = "发送",
-                            tint = Color.White,
-                            modifier = Modifier.size(18.dp),
-                        )
-                    }
-                }
             }
+
+            PromptBar(
+                text = draft,
+                onTextChange = { draft = it },
+                menu = composerMenu,
+                onMenuChange = { composerMenu = it },
+                agentId = currentAgent?.id ?: "claude_code",
+                agent = currentAgent,
+                modes = landingModes,
+                currentModeId = landingModeId,
+                configOptions = landingConfigOptions,
+                isStreaming = false,
+                enabled = state.connection.allowsWrites && !resolvedWsId.isNullOrBlank(),
+                onSend = {
+                    val text = draft.trim()
+                    val wsId = resolvedWsId ?: return@PromptBar
+                    if (text.isEmpty()) return@PromptBar
+                    val agId = currentAgent?.id ?: "claude_code"
+                    composerMenu = null
+                    draft = ""
+                    model.createConversation(
+                        workspaceId = wsId,
+                        agentId = agId,
+                        title = text.take(36),
+                        prompt = text,
+                    )
+                },
+                onStop = {},
+                onSelectMode = { modeId ->
+                    landingModeId = modeId
+                },
+                onSelectOption = { key, value ->
+                    when (key) {
+                        "model" -> selectedAgentId = value
+                        "reasoning_effort" -> landingEffortValue = value
+                    }
+                },
+                onOpenFileBrowser = if (currentWorkspace != null) {
+                    { showFileBrowserSheet = true }
+                } else {
+                    null
+                },
+            )
         }
 
         // Slide-Out Sidebar Scrim
@@ -515,7 +493,7 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                     Row(
                         Modifier
                             .clip(CircleShape)
-                            .background(colors.bg)
+                            .background(colors.segmentedTrack)
                             .padding(3.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -527,8 +505,12 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                                 fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                                 color = if (selected) colors.textPrimary else colors.textSecondary,
                                 modifier = Modifier
+                                    .then(
+                                        if (selected) Modifier.shadow(1.5.dp, CircleShape, ambientColor = Color.Black.copy(0.08f))
+                                        else Modifier,
+                                    )
                                     .clip(CircleShape)
-                                    .background(if (selected) colors.bgElevated else Color.Transparent)
+                                    .background(if (selected) colors.segmentedThumb else Color.Transparent)
                                     .clickable { sidebarTab = id }
                                     .padding(horizontal = 12.dp, vertical = 6.dp),
                             )
@@ -594,8 +576,10 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                 // Sidebar Body
                 if (sidebarTab == "conversations") {
                     val q = sidebarSearch.trim().lowercase()
-                    val filtered = state.conversations.filter {
-                        q.isEmpty() || it.title.lowercase().contains(q) || it.agentId.lowercase().contains(q)
+                    val filtered = remember(state.conversations, q) {
+                        state.conversations.filter {
+                            q.isEmpty() || it.title.lowercase().contains(q) || it.agentId.lowercase().contains(q)
+                        }
                     }
                     LazyColumn(
                         Modifier.weight(1f).fillMaxWidth(),
@@ -625,6 +609,7 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                         } else {
                             items(filtered, key = { it.id }) { item ->
                                 val agent = catalogAgent(state, item.agentId)
+                                val relTime = remember(item.updatedAt) { relativeTime(item.updatedAt) }
                                 Row(
                                     Modifier
                                         .padding(horizontal = 8.dp, vertical = 2.dp)
@@ -656,7 +641,7 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                                         modifier = Modifier.weight(1f),
                                     )
                                     Text(
-                                        relativeTime(item.updatedAt),
+                                        relTime,
                                         fontSize = 10.5.sp,
                                         color = colors.textTertiary,
                                     )
@@ -666,8 +651,10 @@ fun ConversationList(state: UiState, model: CompanionModel) {
                     }
                 } else {
                     val q = sidebarSearch.trim().lowercase()
-                    val filteredProjects = projects.filter {
-                        q.isEmpty() || it.name.lowercase().contains(q) || it.path.lowercase().contains(q)
+                    val filteredProjects = remember(projects, q) {
+                        projects.filter {
+                            q.isEmpty() || it.name.lowercase().contains(q) || it.path.lowercase().contains(q)
+                        }
                     }
                     LazyColumn(
                         Modifier.weight(1f).fillMaxWidth(),
@@ -842,12 +829,21 @@ fun ConversationList(state: UiState, model: CompanionModel) {
         }
 
         if (showDiffSheet && currentWorkspace != null) {
-            CodeDiffSheet(
-                state = state,
-                model = model,
+            DiffListSheet(
                 workspaceId = currentWorkspace.id,
                 conversationId = state.conversations.firstOrNull()?.id.orEmpty(),
-            ) { showDiffSheet = false }
+                model = model,
+                onDismiss = { showDiffSheet = false },
+            )
+        }
+
+        if (showFileBrowserSheet && currentWorkspace != null) {
+            FileBrowserSheet(
+                workspaceId = currentWorkspace.id,
+                title = currentProject?.name ?: currentWorkspace.name.ifBlank { "文件" },
+                model = model,
+                onDismiss = { showFileBrowserSheet = false },
+            )
         }
 
         val menuItem = state.conversations.find { it.id == menuId }
@@ -882,52 +878,6 @@ private fun SidebarQuickNav(title: String, icon: ImageVector, modifier: Modifier
     }
 }
 
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun SessionRow(
-    item: ConversationSummary,
-    agent: dev.vibex.companion.CatalogAgent? = null,
-    onClick: () -> Unit,
-    onLongClick: (Offset) -> Unit = {},
-) {
-    val colors = VibexTheme.colors
-    Row(
-        Modifier
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-            .fillMaxWidth()
-            .clip(ShapeRow)
-            .background(colors.card)
-            .then(longPressModifier(onClick, onLongClick))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
-    ) {
-        Box {
-            AgentAvatar(item.agentId, iconSvg = agent?.iconSvg, displayName = agent?.displayName.orEmpty())
-            Box(
-                Modifier.align(Alignment.BottomEnd).offset(2.dp, 2.dp).size(8.dp).clip(CircleShape)
-                    .background(statusColor(item.status, colors))
-                    .border(1.5.dp, colors.card, CircleShape),
-            )
-        }
-        Column(Modifier.weight(1f)) {
-            Text(item.title.ifBlank { "会话" }, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                listOfNotNull(
-                    if (item.pinned) "置顶" else null,
-                    agentDisplayName(item.agentId, agent?.displayName.orEmpty()).ifBlank { null },
-                    statusLabel(item.status),
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Text(relativeTime(item.updatedAt), style = MaterialTheme.typography.bodyMedium, color = colors.textTertiary)
-    }
-}
-
 fun relativeTime(raw: String): String {
     val parsed = parseInstant(raw) ?: return ""
     val minutes = Duration.between(parsed, Instant.now()).toMinutes().coerceAtLeast(0)
@@ -943,89 +893,4 @@ private fun parseInstant(raw: String): Instant? {
     if (raw.isBlank()) return null
     return runCatching { Instant.parse(raw) }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
-}
-
-@Composable
-fun NewConversation(state: UiState, model: CompanionModel) {
-    val colors = VibexTheme.colors
-    val catalog = state.catalog
-    val projectId = state.selectedProjectId
-    val projectWorkspaces = catalog?.workspaces.orEmpty().filter { it.projectId == projectId }
-    val agents = catalog?.agents.orEmpty().filter { it.ready }
-    var modeNew by remember { mutableStateOf(false) }
-    var workspace by remember { mutableStateOf(projectWorkspaces.firstOrNull()?.id.orEmpty()) }
-    var agent by remember { mutableStateOf(agents.firstOrNull()?.id.orEmpty()) }
-    var title by remember { mutableStateOf("") }
-    var prompt by remember { mutableStateOf("") }
-    var newName by remember { mutableStateOf("") }
-    var newBranch by remember { mutableStateOf(projectWorkspaces.firstOrNull()?.branch.orEmpty()) }
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)) {
-            IconButton(onClick = { model.go(Route.Conversations) }, modifier = Modifier.align(Alignment.CenterStart)) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
-            Text("新会话", style = MaterialTheme.typography.headlineLarge, color = colors.textPrimary, textAlign = TextAlign.Center, modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 48.dp))
-        }
-        Column(Modifier.padding(horizontal = 16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (catalog == null) {
-                Text("正在读取目录", color = colors.textSecondary)
-                return
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = !modeNew, onClick = { modeNew = false }, label = { Text("已有工作区") })
-                FilterChip(selected = modeNew, onClick = { modeNew = true }, label = { Text("新建工作区") })
-            }
-            OutlinedTextField(
-                title, { title = it }, label = { Text("会话名称") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-            )
-            if (modeNew) {
-                OutlinedTextField(
-                    newName, { newName = it }, label = { Text("工作区名称") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-                )
-                OutlinedTextField(
-                    newBranch, { newBranch = it }, label = { Text("分支") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-                )
-            } else {
-                Text("工作区", style = MaterialTheme.typography.titleMedium, color = colors.textSecondary)
-                projectWorkspaces.forEach { item ->
-                    GlassRow(selected = item.id == workspace, onClick = { workspace = item.id }) {
-                        Text(item.name.ifBlank { item.id }, color = colors.textPrimary)
-                        if (item.branch.isNotBlank()) Text(item.branch, color = colors.textTertiary, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-            Text("Agent", style = MaterialTheme.typography.titleMedium, color = colors.textSecondary)
-            agents.forEach { item ->
-                GlassRow(selected = item.id == agent, onClick = { agent = item.id }) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AgentAvatar(item.id, iconSvg = item.iconSvg, displayName = item.displayName)
-                        Column {
-                            Text(agentDisplayName(item.id, item.displayName), color = colors.textPrimary)
-                            Text(if (item.ready) "就绪" else "未就绪", color = colors.textTertiary, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-            }
-            OutlinedTextField(
-                prompt, { prompt = it }, label = { Text("第一句话") },
-                modifier = Modifier.fillMaxWidth(), minLines = 4, shape = ShapeControl,
-            )
-            PrimaryButton(
-                "创建",
-                {
-                    if (modeNew) {
-                        val pid = projectId ?: return@PrimaryButton
-                        model.createWorkspace(pid, newName.ifBlank { "workspace" }, newBranch.ifBlank { null }) { id ->
-                            model.createConversation(id, agent, title, prompt)
-                        }
-                    } else {
-                        model.createConversation(workspace, agent, title, prompt)
-                    }
-                },
-                enabled = state.connection.allowsWrites && agent.isNotBlank() && (modeNew || workspace.isNotBlank()),
-            )
-            Spacer(Modifier.size(24.dp))
-        }
-    }
 }

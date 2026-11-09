@@ -1,6 +1,5 @@
 package dev.vibex.companion.app.ui
 
-import android.os.Build
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -28,14 +27,17 @@ import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.QrCodeScanner
 import androidx.compose.material.icons.rounded.Cancel
 import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.Computer
 import androidx.compose.material.icons.rounded.ContentPaste
 import androidx.compose.material.icons.rounded.History
+import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -65,13 +67,20 @@ fun OnboardingScreen(
 ) {
     val colors = VibexTheme.colors
     val clipboard = LocalClipboardManager.current
-    val initialOrigin = state.activeOrigin
+    val fallbackSavedOrigin = state.activeOrigin
         ?: state.profiles.firstOrNull { it.hostId == state.selectedHostId }?.lastSuccessOrigin
         ?: state.profiles.firstOrNull()?.lastSuccessOrigin
         ?: ""
+    val initialManualOrigin = remember(fallbackSavedOrigin) {
+        if (fallbackSavedOrigin.contains("vibex.xforever.xin", ignoreCase = true) || fallbackSavedOrigin.contains("/t/")) {
+            ""
+        } else {
+            fallbackSavedOrigin
+        }
+    }
     var code by remember { mutableStateOf("") }
-    var origin by remember { mutableStateOf(initialOrigin) }
-    var deviceName by remember { mutableStateOf(Build.MODEL.ifBlank { "Android" }) }
+    var origin by remember { mutableStateOf(initialManualOrigin) }
+    var showManualOrigin by remember { mutableStateOf(false) }
 
     val trimmedCode = code.trim()
     val isInvitation = trimmedCode.startsWith("vibex-pairing:") || trimmedCode.startsWith("{")
@@ -83,9 +92,21 @@ fun OnboardingScreen(
                 ?: inv.reachability.firstOrNull()?.origin?.value
         }.getOrNull()
     }
-    val canSubmit = !state.pairing && trimmedCode.isNotEmpty() && (isInvitation || origin.trim().isNotEmpty())
+    val resolvedOrigin = origin.trim().ifEmpty {
+        state.discoveredHosts.firstOrNull()?.origin ?: fallbackSavedOrigin
+    }
+    val canSubmit = !state.pairing && trimmedCode.isNotEmpty() && (isInvitation || resolvedOrigin.isNotEmpty())
     val recentOrigins = remember(state.profiles) {
-        state.profiles.mapNotNull { it.lastSuccessOrigin }.distinct()
+        state.profiles
+            .mapNotNull { it.lastSuccessOrigin }
+            .filterNot { it.contains("vibex.xforever.xin", ignoreCase = true) || it.contains("/t/") }
+            .distinct()
+    }
+
+    LaunchedEffect(Unit) {
+        if (state.discoveredHosts.isEmpty() && !state.discoveringHosts) {
+            model.discoverHosts(autoRequestIfSingle = false)
+        }
     }
 
     val submit = {
@@ -93,7 +114,7 @@ fun OnboardingScreen(
             if (isInvitation) {
                 model.pairFromRaw(trimmedCode)
             } else {
-                model.pairManual(origin.trim(), trimmedCode)
+                model.pairManual(resolvedOrigin, trimmedCode)
             }
         }
     }
@@ -152,6 +173,140 @@ fun OnboardingScreen(
                 .padding(horizontal = 16.dp, vertical = 16.dp),
             verticalArrangement = Arrangement.spacedBy(18.dp),
         ) {
+            // 0. Zero-Config Auto-Discovered LAN Hosts / Pending SAS Approval
+            if (state.pendingConnectSasCode != null) {
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.card)
+                        .border(0.75.dp, colors.stroke, RoundedCornerShape(12.dp))
+                        .padding(horizontal = 16.dp, vertical = 14.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "等待电脑「${state.pendingConnectHostName ?: "VibeX"}」确认连接",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                    )
+                    Text(
+                        "请在电脑顶部弹窗点击「连接」",
+                        fontSize = 12.5.sp,
+                        color = colors.textSecondary,
+                    )
+                    Text(
+                        "核对码 ${state.pendingConnectSasCode}",
+                        fontSize = 20.sp,
+                        fontWeight = FontWeight.Bold,
+                        fontFamily = PlexMono,
+                        color = colors.accent,
+                    )
+                    Text(
+                        "取消等待",
+                        fontSize = 12.5.sp,
+                        color = colors.textSecondary,
+                        modifier = Modifier.clickable { model.cancelPendingConnectRequest() },
+                    )
+                }
+            } else {
+                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    Row(
+                        Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "在线电脑",
+                            fontSize = 12.sp,
+                            color = colors.textSecondary,
+                            modifier = Modifier.weight(1f),
+                        )
+                        Row(
+                            Modifier.clickable(enabled = !state.discoveringHosts) {
+                                model.discoverHosts(autoRequestIfSingle = false)
+                            },
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(Icons.Rounded.Refresh, null, tint = colors.accent, modifier = Modifier.size(13.dp))
+                            Text(
+                                if (state.discoveringHosts) "搜索中…" else "刷新",
+                                fontSize = 12.sp,
+                                color = colors.accent,
+                            )
+                        }
+                    }
+                    Column(
+                        Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(12.dp))
+                            .background(colors.card),
+                    ) {
+                        if (state.discoveredHosts.isEmpty()) {
+                            Text(
+                                if (state.discoveringHosts) "正在扫描同一局域网内在线的 VibeX 电脑…"
+                                else "未发现局域网电脑，请使用下方扫码或连接码通过云服务配对。",
+                                fontSize = 12.5.sp,
+                                color = colors.textSecondary,
+                                modifier = Modifier.padding(horizontal = 14.dp, vertical = 12.dp),
+                            )
+                        } else {
+                            state.discoveredHosts.forEachIndexed { idx, host ->
+                                if (idx > 0) {
+                                    HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
+                                }
+                                val isCloudHost = host.origin.contains("vibex.xforever.xin", ignoreCase = true) ||
+                                    host.origin.startsWith("https://", ignoreCase = true)
+                                val cleanHostName = host.name.removeSuffix(".local").ifBlank { "VibeX 桌面端" }
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clickable(enabled = !state.pairing) { model.requestConnectToHost(host) }
+                                        .padding(horizontal = 14.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                ) {
+                                    Box(
+                                        Modifier
+                                            .size(38.dp)
+                                            .clip(RoundedCornerShape(10.dp))
+                                            .background(colors.accent.copy(0.12f)),
+                                        contentAlignment = Alignment.Center,
+                                    ) {
+                                        Icon(Icons.Rounded.Computer, null, tint = colors.accent, modifier = Modifier.size(19.dp))
+                                    }
+                                    Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                        Text(
+                                            cleanHostName,
+                                            fontSize = 15.sp,
+                                            fontWeight = FontWeight.SemiBold,
+                                            color = colors.textPrimary,
+                                            maxLines = 1,
+                                        )
+                                        Text(
+                                            if (isCloudHost) "VibeX 云服务 · Beta" else host.origin,
+                                            fontSize = 12.sp,
+                                            fontFamily = if (isCloudHost) null else PlexMono,
+                                            color = if (isCloudHost) colors.accent else colors.textSecondary,
+                                            maxLines = 1,
+                                        )
+                                    }
+                                    Box(
+                                        Modifier
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(colors.accent)
+                                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                                    ) {
+                                        Text("一键连接", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.onAccent)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // 1. Primary QR Scan Action Card
             Row(
                 Modifier
@@ -181,12 +336,27 @@ fun OnboardingScreen(
 
             // 2. Connection Code Input Section
             Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "连接码",
-                    fontSize = 12.sp,
-                    color = colors.textSecondary,
-                    modifier = Modifier.padding(start = 12.dp),
-                )
+                Row(
+                    Modifier.fillMaxWidth().padding(horizontal = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text(
+                        "连接码",
+                        fontSize = 12.sp,
+                        color = colors.textSecondary,
+                    )
+                    Text(
+                        "云服务 Beta",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.accent,
+                        modifier = Modifier
+                            .clip(CircleShape)
+                            .background(colors.accent.copy(0.12f))
+                            .padding(horizontal = 6.dp, vertical = 1.dp),
+                    )
+                }
                 Column(
                     Modifier
                         .fillMaxWidth()
@@ -254,6 +424,8 @@ fun OnboardingScreen(
                         }
                     }
                     if (parsedInvitationHost != null) {
+                        val isCloudInv = parsedInvitationHost.contains("vibex.xforever.xin", ignoreCase = true) ||
+                            parsedInvitationHost.startsWith("https://", ignoreCase = true)
                         HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 14.dp))
                         Row(
                             Modifier
@@ -261,114 +433,100 @@ fun OnboardingScreen(
                                 .padding(horizontal = 14.dp, vertical = 10.dp),
                             verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            Text("识别到的电脑地址", fontSize = 13.sp, color = colors.textPrimary, modifier = Modifier.weight(1f))
-                            Text(parsedInvitationHost, fontSize = 12.sp, fontFamily = PlexMono, color = colors.textSecondary)
+                            Text("连接通道", fontSize = 13.sp, color = colors.textPrimary, modifier = Modifier.weight(1f))
+                            Text(
+                                if (isCloudInv) "VibeX 云服务 · Beta" else parsedInvitationHost,
+                                fontSize = 12.sp,
+                                fontFamily = if (isCloudInv) null else PlexMono,
+                                color = if (isCloudInv) colors.accent else colors.textSecondary,
+                            )
                         }
                     }
                 }
             }
 
-            // 3. Host Address (Only needed when using a short 8-char code)
+            // 3. Optional Manual LAN / Self-Hosted Address (Collapsed by default)
             if (!isInvitation) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                if (!showManualOrigin) {
                     Text(
-                        "电脑地址",
-                        fontSize = 12.sp,
-                        color = colors.textSecondary,
-                        modifier = Modifier.padding(start = 12.dp),
+                        "手动指定局域网 IP 或自建地址",
+                        fontSize = 12.5.sp,
+                        color = colors.accent,
+                        modifier = Modifier
+                            .padding(start = 12.dp)
+                            .clickable { showManualOrigin = true },
                     )
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(12.dp))
-                            .background(colors.card)
-                            .padding(horizontal = 14.dp, vertical = 12.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Box(Modifier.fillMaxWidth()) {
-                            if (origin.isEmpty()) {
-                                Text(
-                                    "例如 192.168.1.2 或 http://192.168.1.2:17891",
-                                    fontSize = 14.sp,
-                                    color = colors.textTertiary,
-                                    fontFamily = PlexMono,
+                } else {
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Text(
+                            "局域网 IP / 自建地址（可选）",
+                            fontSize = 12.sp,
+                            color = colors.textSecondary,
+                            modifier = Modifier.padding(start = 12.dp),
+                        )
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.card)
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Box(Modifier.fillMaxWidth()) {
+                                if (origin.isEmpty()) {
+                                    Text(
+                                        "例如 192.168.1.2:17891（留空则自动使用在线电脑）",
+                                        fontSize = 13.5.sp,
+                                        color = colors.textTertiary,
+                                    )
+                                }
+                                BasicTextField(
+                                    value = origin,
+                                    onValueChange = { origin = it },
+                                    singleLine = true,
+                                    textStyle = TextStyle(
+                                        color = colors.textPrimary,
+                                        fontSize = 14.sp,
+                                        fontFamily = PlexMono,
+                                    ),
+                                    cursorBrush = SolidColor(colors.accent),
+                                    modifier = Modifier.fillMaxWidth(),
                                 )
                             }
-                            BasicTextField(
-                                value = origin,
-                                onValueChange = { origin = it },
-                                singleLine = true,
-                                textStyle = TextStyle(
-                                    color = colors.textPrimary,
-                                    fontSize = 14.sp,
-                                    fontFamily = PlexMono,
-                                ),
-                                cursorBrush = SolidColor(colors.accent),
-                                modifier = Modifier.fillMaxWidth(),
-                            )
-                        }
-                        if (recentOrigins.isNotEmpty()) {
-                            Row(
-                                Modifier.horizontalScroll(rememberScrollState()),
-                                horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            ) {
-                                recentOrigins.forEach { savedOrigin ->
-                                    val selected = origin.trim() == savedOrigin
-                                    Row(
-                                        Modifier
-                                            .clip(CircleShape)
-                                            .background(if (selected) colors.accent.copy(0.16f) else colors.bg)
-                                            .clickable { origin = savedOrigin }
-                                            .padding(horizontal = 10.dp, vertical = 5.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                    ) {
-                                        Icon(
-                                            if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.History,
-                                            null,
-                                            tint = if (selected) colors.accent else colors.textSecondary,
-                                            modifier = Modifier.size(12.dp),
-                                        )
-                                        Text(
-                                            savedOrigin,
-                                            fontSize = 11.sp,
-                                            fontFamily = PlexMono,
-                                            color = if (selected) colors.accent else colors.textSecondary,
-                                        )
+                            if (recentOrigins.isNotEmpty()) {
+                                Row(
+                                    Modifier.horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    recentOrigins.forEach { savedOrigin ->
+                                        val selected = origin.trim() == savedOrigin
+                                        Row(
+                                            Modifier
+                                                .clip(CircleShape)
+                                                .background(if (selected) colors.accent.copy(0.16f) else colors.bg)
+                                                .clickable { origin = savedOrigin }
+                                                .padding(horizontal = 10.dp, vertical = 5.dp),
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                        ) {
+                                            Icon(
+                                                if (selected) Icons.Rounded.CheckCircle else Icons.Rounded.History,
+                                                null,
+                                                tint = if (selected) colors.accent else colors.textSecondary,
+                                                modifier = Modifier.size(12.dp),
+                                            )
+                                            Text(
+                                                savedOrigin,
+                                                fontSize = 11.sp,
+                                                fontFamily = PlexMono,
+                                                color = if (selected) colors.accent else colors.textSecondary,
+                                            )
+                                        }
                                     }
                                 }
                             }
                         }
                     }
-                }
-            }
-
-            // 4. Device Name
-            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                Text(
-                    "本机名称",
-                    fontSize = 12.sp,
-                    color = colors.textSecondary,
-                    modifier = Modifier.padding(start = 12.dp),
-                )
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
-                        .background(colors.card)
-                        .padding(horizontal = 14.dp, vertical = 12.dp),
-                ) {
-                    BasicTextField(
-                        value = deviceName,
-                        onValueChange = { deviceName = it },
-                        singleLine = true,
-                        textStyle = TextStyle(
-                            color = colors.textPrimary,
-                            fontSize = 14.sp,
-                        ),
-                        cursorBrush = SolidColor(colors.accent),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
                 }
             }
 

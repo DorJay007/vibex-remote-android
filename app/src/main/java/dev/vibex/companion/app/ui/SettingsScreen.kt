@@ -100,12 +100,8 @@ fun SettingsScreen(
         SettingsSection.Profile -> SettingsPage("个人资料", onBack) { ProfileSettings(state) }
         SettingsSection.Connection -> SettingsPage("已配对的电脑", onBack) { ConnectionSettings(state, model, onScan, onManualPair) }
         SettingsSection.Extensions -> SettingsPage("技能与扩展", onBack) { ExtensionsSettings(state, model) }
-        SettingsSection.Appearance -> SettingsPage("外观", onBack) { AppearanceSettings(state, model) }
         SettingsSection.Font -> SettingsPage("字体", onBack) { FontSettings(state, model) }
         SettingsSection.Notification -> SettingsPage("通知", onBack) { NotificationSettings(state, model) }
-        SettingsSection.Stream -> SettingsPage("消息流控制", onBack) { StreamSettings(state, model) }
-        SettingsSection.Host -> SettingsPage("Host", onBack) { HostSettings(state) }
-        SettingsSection.Capabilities -> SettingsPage("能力", onBack) { CapabilitySettings(state) }
         SettingsSection.About -> SettingsPage("关于 VibeX", onBack) { AboutSettings(state) }
     }
 }
@@ -171,15 +167,23 @@ private fun SettingsIndex(
         // 2. Paired Computers & Skills/Extensions Card
         item {
             IosSettingsCard {
+                val activeUrl = state.activeOrigin ?: selected?.lastSuccessOrigin ?: ""
+                val isCloudActive = activeUrl.contains("vibex.xforever.xin", ignoreCase = true) ||
+                    activeUrl.startsWith("https://", ignoreCase = true)
                 val hostSub = if (selected != null) {
-                    val hostAddr = (state.activeOrigin ?: selected.lastSuccessOrigin ?: "")
+                    val hostAddr = activeUrl
                         .removePrefix("http://")
                         .removePrefix("https://")
+                        .substringBefore("/")
                         .substringBefore(":")
                         .ifBlank { "127.0.0.1" }
-                    "VibeX ($hostAddr) · 共 ${state.profiles.size} 台历史设备"
+                    if (isCloudActive) {
+                        "VibeX 云服务 · Beta"
+                    } else {
+                        "局域网直连 · $hostAddr"
+                    }
                 } else {
-                    "扫码、粘贴邀请码或手动输入连接"
+                    "扫码、连接码或云服务跨网配对"
                 }
                 IosSettingsRow(
                     icon = Icons.Rounded.Computer,
@@ -187,15 +191,29 @@ private fun SettingsIndex(
                     title = "已配对的电脑",
                     subtitle = hostSub,
                     trailing = {
+                        val badgeColor = when (state.connection) {
+                            ConnectionState.Online -> Color(0xFF34C759)
+                            ConnectionState.Connecting, ConnectionState.Recovering -> Color(0xFFFF9500)
+                            ConnectionState.AuthRequired, ConnectionState.Incompatible -> colors.danger
+                            else -> colors.textTertiary
+                        }
+                        val badgeText = when {
+                            selected == null -> "未连接"
+                            state.connection == ConnectionState.Online -> {
+                                val rtt = state.realtimeRttMs?.let { " · ${it}ms" }.orEmpty()
+                                "已连接$rtt"
+                            }
+                            else -> connectionLabel(state.connection)
+                        }
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(5.dp)) {
                             Box(
                                 Modifier
                                     .size(7.dp)
                                     .clip(CircleShape)
-                                    .background(if (isOnline) Color(0xFF34C759) else colors.textTertiary),
+                                    .background(badgeColor),
                             )
                             Text(
-                                if (isOnline) "已连接" else if (selected != null) "离线" else "未连接",
+                                badgeText,
                                 fontSize = 13.sp,
                                 fontWeight = FontWeight.Medium,
                                 color = if (isOnline) Color(0xFF34C759) else colors.textSecondary,
@@ -237,7 +255,7 @@ private fun SettingsIndex(
                     Row(
                         Modifier
                             .clip(RoundedCornerShape(9.dp))
-                            .background(colors.bg)
+                            .background(colors.segmentedTrack)
                             .padding(3.dp),
                         horizontalArrangement = Arrangement.spacedBy(2.dp),
                     ) {
@@ -251,14 +269,14 @@ private fun SettingsIndex(
                                 label,
                                 fontSize = 12.5.sp,
                                 fontWeight = if (active) FontWeight.SemiBold else FontWeight.Medium,
-                                color = colors.textPrimary,
+                                color = if (active) colors.textPrimary else colors.textSecondary,
                                 modifier = Modifier
                                     .then(
                                         if (active) Modifier.shadow(2.dp, RoundedCornerShape(7.dp), ambientColor = Color.Black.copy(0.08f))
                                         else Modifier,
                                     )
                                     .clip(RoundedCornerShape(7.dp))
-                                    .background(if (active) colors.bgElevated else Color.Transparent)
+                                    .background(if (active) colors.segmentedThumb else Color.Transparent)
                                     .clickable { model.setAppearance(mode) }
                                     .padding(horizontal = 10.dp, vertical = 5.dp),
                             )
@@ -357,7 +375,8 @@ private fun IosSettingsCard(content: @Composable () -> Unit) {
         Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(16.dp))
-            .background(colors.card),
+            .background(colors.card)
+            .border(0.6.dp, colors.stroke, RoundedCornerShape(16.dp)),
     ) {
         content()
     }
@@ -574,11 +593,29 @@ private fun LazyListScope.ConnectionSettings(
                         Icon(Icons.Outlined.QrCodeScanner, null, tint = colors.accent, modifier = Modifier.size(22.dp))
                     }
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                        Text("配对新的电脑", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.accent)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            Text("配对新的电脑", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.accent)
+                            Text(
+                                "云服务 Beta",
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.accent,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(colors.accent.copy(0.12f))
+                                    .border(0.5.dp, colors.accent.copy(0.28f), CircleShape)
+                                    .padding(horizontal = 7.dp, vertical = 1.5.dp),
+                            )
+                        }
                         Text(
-                            "扫描桌面端二维码、粘贴邀请码或手动输入地址",
+                            "扫码、8 位连接码或云服务跨网连接",
                             fontSize = 12.5.sp,
                             color = colors.textSecondary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
                         )
                     }
                     Box(
@@ -611,12 +648,21 @@ private fun LazyListScope.ConnectionSettings(
                         if (index > 0) HorizontalDivider(color = colors.hairline, modifier = Modifier.padding(start = 68.dp))
                         val isActive = profile.hostId == state.selectedHostId
                         val origin = if (isActive) (state.activeOrigin ?: profile.lastSuccessOrigin) else profile.lastSuccessOrigin
+                        val isCloudOrigin = (origin ?: "").contains("vibex.xforever.xin", ignoreCase = true) ||
+                            (origin ?: "").startsWith("https://", ignoreCase = true)
                         val hostAddr = (origin ?: "")
                             .removePrefix("http://")
                             .removePrefix("https://")
+                            .substringBefore("/")
                             .substringBefore(":")
                             .ifBlank { "127.0.0.1" }
-                        val displayName = if (profile.name.startsWith("VibeX (")) profile.name else "VibeX ($hostAddr)"
+                        val displayName = if (isCloudOrigin) {
+                            "VibeX 桌面端"
+                        } else if (profile.name.startsWith("VibeX (")) {
+                            profile.name
+                        } else {
+                            "VibeX ($hostAddr)"
+                        }
                         Row(
                             Modifier
                                 .fillMaxWidth()
@@ -642,64 +688,125 @@ private fun LazyListScope.ConnectionSettings(
                                     modifier = Modifier.size(20.dp),
                                 )
                             }
-                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
-                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    Text(displayName, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
-                                    if (isActive) {
-                                        Text(
-                                            "当前连接",
-                                            fontSize = 11.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = Color(0xFF34C759),
-                                            modifier = Modifier
-                                                .clip(CircleShape)
-                                                .background(Color(0xFF34C759).copy(0.16f))
-                                                .padding(horizontal = 8.dp, vertical = 2.dp),
-                                        )
-                                    }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Text(
+                                        displayName,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                    )
+                                    Text(
+                                        if (isCloudOrigin) "云服务 Beta" else "局域网",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isCloudOrigin) colors.accent else colors.textSecondary,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .background(if (isCloudOrigin) colors.accent.copy(0.12f) else colors.segmentedTrack)
+                                            .padding(horizontal = 8.dp, vertical = 2.dp),
+                                    )
                                 }
-                                Text(
-                                    origin ?: "未验证地址",
-                                    fontSize = 12.5.sp,
-                                    fontFamily = PlexMono,
-                                    color = colors.textSecondary,
-                                )
-                                Text(
-                                    "设备: ${Build.MODEL} · VibeX v${state.hostVersion.ifBlank { "0.4.3" }}",
-                                    fontSize = 11.5.sp,
-                                    color = colors.textTertiary,
-                                )
+                                if (!isCloudOrigin && !origin.isNullOrBlank()) {
+                                    Text(
+                                        origin,
+                                        fontSize = 12.sp,
+                                        fontFamily = PlexMono,
+                                        color = colors.textSecondary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (isActive) {
+                                    val telemetryLine = if (state.connection == ConnectionState.Online) {
+                                        val rttText = state.realtimeRttMs?.let { "${it} ms" } ?: "测量中"
+                                        "在线 · 实时延迟 $rttText"
+                                    } else {
+                                        val reason = state.connectionFailureReason ?: connectionLabel(state.connection)
+                                        "状态: $reason"
+                                    }
+                                    Text(
+                                        telemetryLine,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = if (state.connection == ConnectionState.Online) Color(0xFF34C759) else colors.textTertiary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                } else {
+                                    Text(
+                                        "点击切换连接",
+                                        fontSize = 12.sp,
+                                        color = colors.textTertiary,
+                                        maxLines = 1,
+                                    )
+                                }
                             }
                             Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = colors.textTertiary, modifier = Modifier.size(18.dp))
                         }
                     }
                 }
-                Text(
-                    "点击任意电脑可查看连接诊断详情或切换连接。",
-                    fontSize = 12.sp,
-                    color = colors.textTertiary,
-                    modifier = Modifier.padding(horizontal = 8.dp),
-                )
             }
 
             if (detailProfile != null) {
-                val p = detailProfile!!
                 AlertDialog(
                     onDismissRequest = { detailProfile = null },
-                    title = { Text(p.name) },
+                    containerColor = colors.card,
+                    title = {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text("连接诊断", fontSize = 17.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                            Text(
+                                "Beta",
+                                fontSize = 11.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.accent,
+                                modifier = Modifier
+                                    .clip(CircleShape)
+                                    .background(colors.accent.copy(0.12f))
+                                    .padding(horizontal = 8.dp, vertical = 2.dp),
+                            )
+                        }
+                    },
                     text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("当前地址: ${state.activeOrigin ?: p.lastSuccessOrigin ?: "未知"}", fontFamily = PlexMono, fontSize = 12.sp)
-                            Text("协议版本: v${state.hostProtocol.ifBlank { "1.0" }}", fontSize = 13.sp)
-                            Text("Host 版本: v${state.hostVersion.ifBlank { "0.4.3" }}", fontSize = 13.sp)
-                            Text("连接状态: ${connectionLabel(state.connection)}", fontSize = 13.sp)
+                        Column(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(colors.bg)
+                                .border(0.6.dp, colors.stroke, RoundedCornerShape(12.dp))
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            DiagnosticRow(
+                                "当前状态",
+                                connectionLabel(state.connection),
+                                valueColor = if (state.connection == ConnectionState.Online) Color(0xFF34C759) else colors.textPrimary,
+                            )
+                            DiagnosticRow("传输通道", state.transportPath, valueColor = colors.accent)
+                            DiagnosticRow(
+                                "实时延迟",
+                                if (state.connection == ConnectionState.Online && state.realtimeRttMs != null) "${state.realtimeRttMs} ms" else "—",
+                            )
+                            if (state.connection != ConnectionState.Online && !state.connectionFailureReason.isNullOrBlank()) {
+                                DiagnosticRow("离线原因", state.connectionFailureReason, valueColor = colors.danger)
+                            }
                         }
                     },
                     confirmButton = {
                         TextButton(onClick = {
                             detailProfile = null
                             model.connectSelected()
-                        }) { Text("重新连接") }
+                        }) { Text("重新连接", fontWeight = FontWeight.SemiBold, color = colors.accent) }
                     },
                     dismissButton = {
                         TextButton(onClick = {
@@ -710,6 +817,39 @@ private fun LazyListScope.ConnectionSettings(
                 )
             }
         }
+    }
+}
+
+@Composable
+private fun DiagnosticRow(
+    label: String,
+    value: String,
+    valueColor: Color? = null,
+    mono: Boolean = false,
+) {
+    val colors = VibexTheme.colors
+    Row(
+        Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        Text(
+            label,
+            fontSize = 12.sp,
+            color = colors.textSecondary,
+            modifier = Modifier.width(68.dp),
+        )
+        Text(
+            value,
+            fontSize = 12.5.sp,
+            fontWeight = FontWeight.Medium,
+            fontFamily = if (mono) PlexMono else null,
+            color = valueColor ?: colors.textPrimary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            textAlign = TextAlign.End,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 
@@ -777,10 +917,11 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
                             .height(38.dp)
                             .clip(RoundedCornerShape(10.dp))
                             .background(if (selected) colors.accent else colors.card)
+                            .border(0.6.dp, if (selected) Color.Transparent else colors.stroke, RoundedCornerShape(10.dp))
                             .clickable { tab = idx }
-                            .padding(horizontal = 6.dp),
+                            .padding(horizontal = 5.dp),
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp, Alignment.CenterHorizontally),
+                        horizontalArrangement = Arrangement.spacedBy(3.5.dp, Alignment.CenterHorizontally),
                     ) {
                         Icon(
                             icon,
@@ -790,19 +931,22 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
                         )
                         Text(
                             label,
-                            fontSize = 12.5.sp,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (selected) Color.White else colors.textPrimary,
                             maxLines = 1,
+                            softWrap = false,
                         )
                         Text(
                             "$count",
-                            fontSize = 11.sp,
+                            fontSize = 10.5.sp,
                             fontWeight = FontWeight.SemiBold,
                             color = if (selected) Color.White else colors.textSecondary,
+                            maxLines = 1,
+                            softWrap = false,
                             modifier = Modifier
                                 .clip(CircleShape)
-                                .background(if (selected) Color.White.copy(0.24f) else colors.bg)
+                                .background(if (selected) Color.White.copy(0.24f) else colors.segmentedTrack)
                                 .padding(horizontal = 5.dp, vertical = 1.dp),
                         )
                     }
@@ -816,6 +960,7 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
                     .fillMaxWidth()
                     .clip(RoundedCornerShape(10.dp))
                     .background(colors.card)
+                    .border(0.6.dp, colors.stroke, RoundedCornerShape(10.dp))
                     .padding(horizontal = 12.dp, vertical = 9.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -1045,105 +1190,6 @@ private fun LazyListScope.NotificationSettings(state: UiState, model: CompanionM
     }
 }
 
-private fun LazyListScope.StreamSettings(state: UiState, model: CompanionModel) {
-    val prefs = state.streamDisplay
-    item { GroupLabel("思考") }
-    item {
-        IosSettingsCard {
-            SettingChoice(
-                title = "思考内容",
-                options = listOf(
-                    ThinkingDisplay.All to "全部",
-                    ThinkingDisplay.Collapsed to "折叠",
-                    ThinkingDisplay.Hidden to "隐藏",
-                ),
-                current = prefs.thinking,
-                onSelect = { model.setStreamDisplay(prefs.copy(thinking = it)) },
-            )
-        }
-    }
-    item { GroupLabel("工具调用") }
-    item {
-        IosSettingsCard {
-            SettingChoice(
-                title = "显示失败工具调用",
-                options = listOf(true to "显示", false to "不显示"),
-                current = prefs.showFailedTools,
-                onSelect = { model.setStreamDisplay(prefs.copy(showFailedTools = it)) },
-            )
-            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 16.dp))
-            SettingChoice(
-                title = "工具调用组件",
-                options = listOf(CollapseDisplay.Expanded to "展开", CollapseDisplay.Collapsed to "折叠"),
-                current = prefs.tools,
-                onSelect = { model.setStreamDisplay(prefs.copy(tools = it)) },
-            )
-        }
-    }
-    item { GroupLabel("消息") }
-    item {
-        IosSettingsCard {
-            SettingChoice(
-                title = "会话消息流",
-                options = listOf(MessageStreamDisplay.All to "全部", MessageStreamDisplay.Collapsed to "折叠"),
-                current = prefs.messages,
-                onSelect = { model.setStreamDisplay(prefs.copy(messages = it)) },
-            )
-        }
-    }
-}
-
-private fun LazyListScope.HostSettings(state: UiState) {
-    val selected = state.profiles.find { it.hostId == state.selectedHostId }
-    item {
-        IosSettingsCard {
-            SettingsFact("版本", state.hostVersion.ifBlank { "0.4.3" })
-            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 16.dp))
-            SettingsFact("协议", state.hostProtocol.ifBlank { "1.0" })
-            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 16.dp))
-            SettingsFact("Host ID", selected?.hostId ?: "—")
-            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 16.dp))
-            SettingsFact("当前地址", state.activeOrigin ?: selected?.lastSuccessOrigin ?: "没有")
-        }
-    }
-}
-
-private fun LazyListScope.AppearanceSettings(state: UiState, model: CompanionModel) {
-    item { GroupLabel("主题") }
-    item {
-        IosSettingsCard {
-            SettingChoice(
-                title = "外观",
-                options = listOf(
-                    Appearance.System to "跟随系统",
-                    Appearance.Light to "浅色",
-                    Appearance.Dark to "深色",
-                ),
-                current = state.appearance,
-                onSelect = model::setAppearance,
-            )
-        }
-    }
-}
-
-private fun LazyListScope.CapabilitySettings(state: UiState) {
-    item {
-        IosSettingsCard {
-            val caps = state.hostCapabilities.ifEmpty { listOf("conversations.read", "conversations.write", "approvals.respond") }
-            caps.forEachIndexed { index, cap ->
-                if (index > 0) HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 16.dp))
-                Text(
-                    cap,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = VibexTheme.colors.textPrimary,
-                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
-                    fontFamily = PlexMono,
-                )
-            }
-        }
-    }
-}
-
 private fun LazyListScope.AboutSettings(state: UiState) {
     item {
         val colors = VibexTheme.colors
@@ -1180,7 +1226,7 @@ private fun <T> SettingChoice(title: String, options: List<Pair<T, String>>, cur
             Modifier
                 .fillMaxWidth()
                 .clip(RoundedCornerShape(10.dp))
-                .background(colors.bg)
+                .background(colors.segmentedTrack)
                 .padding(3.dp),
             horizontalArrangement = Arrangement.spacedBy(3.dp),
         ) {
@@ -1189,12 +1235,17 @@ private fun <T> SettingChoice(title: String, options: List<Pair<T, String>>, cur
                 Text(
                     label,
                     style = MaterialTheme.typography.labelLarge,
-                    color = if (selected) colors.onAccent else colors.textSecondary,
+                    fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                    color = if (selected) colors.textPrimary else colors.textSecondary,
                     textAlign = TextAlign.Center,
                     modifier = Modifier
                         .weight(1f)
+                        .then(
+                            if (selected) Modifier.shadow(2.dp, RoundedCornerShape(8.dp), ambientColor = Color.Black.copy(0.08f))
+                            else Modifier,
+                        )
                         .clip(RoundedCornerShape(8.dp))
-                        .background(if (selected) colors.accent else Color.Transparent)
+                        .background(if (selected) colors.segmentedThumb else Color.Transparent)
                         .clickable { onSelect(value) }
                         .padding(vertical = 8.dp),
                 )
@@ -1212,13 +1263,4 @@ private fun GroupLabel(text: String) {
         color = VibexTheme.colors.textSecondary,
         modifier = Modifier.padding(start = 6.dp, top = 4.dp),
     )
-}
-
-@Composable
-private fun SettingsFact(title: String, value: String) {
-    val colors = VibexTheme.colors
-    Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(2.dp)) {
-        Text(title, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
-        Text(value, style = MaterialTheme.typography.bodyMedium, color = colors.textSecondary, fontFamily = PlexMono)
-    }
 }

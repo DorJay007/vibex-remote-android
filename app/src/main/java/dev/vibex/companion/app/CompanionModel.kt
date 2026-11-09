@@ -4,29 +4,74 @@ import android.app.Application
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.vibex.companion.AgentPlanUsage
 import dev.vibex.companion.AuthRequiredException
 import dev.vibex.companion.CatalogAgent
 import dev.vibex.companion.CatalogWorkspace
+import dev.vibex.companion.CollabBotAvatarConfig
+import dev.vibex.companion.CollabCard
+import dev.vibex.companion.CollabCollectionItem
+import dev.vibex.companion.CollabContactGroup
+import dev.vibex.companion.CollabMemberConfig
+import dev.vibex.companion.CollabMemoryView
+import dev.vibex.companion.CollabMessagesPage
+import dev.vibex.companion.CollabSidebarItem
+import dev.vibex.companion.CollabSpaceMember
+import dev.vibex.companion.CollabSpaceSummary
+import dev.vibex.companion.CollabTeam
 import dev.vibex.companion.CollaborationMessageItem
 import dev.vibex.companion.CollaborationThreadSummary
 import dev.vibex.companion.ConnectionState
 import dev.vibex.companion.ConversationSummary
 import dev.vibex.companion.ConversationView
+import dev.vibex.companion.DiscoveredLanHost
 import dev.vibex.companion.EventFold
 import dev.vibex.companion.ExtensionCatalogItem
 import dev.vibex.companion.HostApi
 import dev.vibex.companion.HostOrigin
+import dev.vibex.companion.KanbanSessionStatus
+import dev.vibex.companion.KanbanSessionSummary
 import dev.vibex.companion.OriginOrder
 import dev.vibex.companion.PairingClient
 import dev.vibex.companion.PairingCoordinator
 import dev.vibex.companion.PairingInvitationParser
 import dev.vibex.companion.PendingItem
+import dev.vibex.companion.PlanUsageResponse
+import dev.vibex.companion.ProjectUsageStatistics
 import dev.vibex.companion.ReachabilityTarget
 import dev.vibex.companion.SessionCatalog
 import dev.vibex.companion.SubagentRoleItem
 import dev.vibex.companion.TimelineSession
+import dev.vibex.companion.UsageDateRange
 import dev.vibex.companion.WorkspaceFileDiff
+import dev.vibex.companion.agentPlanUsage
 import dev.vibex.companion.applyCreateTimeSessionConfig
+import dev.vibex.companion.collabAddMemberToSpace
+import dev.vibex.companion.collabCancelSpaceTurn
+import dev.vibex.companion.collabCollectionItems
+import dev.vibex.companion.collabContactGroups
+import dev.vibex.companion.collabCreateMember
+import dev.vibex.companion.collabMarkRead
+import dev.vibex.companion.collabMarkUnread
+import dev.vibex.companion.collabMemberConfig
+import dev.vibex.companion.collabMemoryView
+import dev.vibex.companion.collabMessagesPage
+import dev.vibex.companion.collabPostMessage
+import dev.vibex.companion.collabReact
+import dev.vibex.companion.collabResolveCard
+import dev.vibex.companion.collabResolveSession
+import dev.vibex.companion.collabSidebar
+import dev.vibex.companion.collabSpaceMembers
+import dev.vibex.companion.collabSpaces
+import dev.vibex.companion.collabTeamsList
+import dev.vibex.companion.deleteKanbanSession
+import dev.vibex.companion.forkKanbanConversation
+import dev.vibex.companion.kanbanAllSessions
+import dev.vibex.companion.markKanbanSessionViewed
+import dev.vibex.companion.projectUsageStatistics
+import dev.vibex.companion.renameKanbanSession
+import dev.vibex.companion.setKanbanSessionPinned
+import dev.vibex.companion.updateKanbanSessionStatus
 import dev.vibex.companion.app.data.CredentialStore
 import dev.vibex.companion.app.data.HostProfile
 import dev.vibex.companion.app.data.OfflineStore
@@ -86,10 +131,19 @@ data class UiState(
     val extensionsLoading: Boolean = false,
     val workspaceDiffs: List<WorkspaceFileDiff> = emptyList(),
     val diffsLoading: Boolean = false,
+    val discoveredHosts: List<DiscoveredLanHost> = emptyList(),
+    val discoveringHosts: Boolean = false,
+    val pendingConnectSasCode: String? = null,
+    val pendingConnectHostName: String? = null,
+    val pendingConnectOrigin: String? = null,
+    val lastConnectDurationMs: Long? = null,
+    val realtimeRttMs: Long? = null,
+    val transportPath: String = "LAN 直连",
+    val connectionFailureReason: String? = null,
     val route: Route = Route.Conversations,
 )
 
-enum class SettingsSection { Profile, Connection, Extensions, Appearance, Font, Notification, Stream, Host, Capabilities, About }
+enum class SettingsSection { Profile, Connection, Extensions, Font, Notification, About }
 
 sealed class Route {
     data object Onboarding : Route()
@@ -99,9 +153,16 @@ sealed class Route {
     data object Status : Route()
     data object Collaboration : Route()
     data class Settings(val section: SettingsSection? = null) : Route()
-    data object NewConversation : Route()
     data class Timeline(val conversationId: String) : Route()
 }
+
+data class CollabDetailBundle(
+    val members: List<CollabSpaceMember> = emptyList(),
+    val leadMemberId: String = "",
+    val memberConfig: CollabMemberConfig? = null,
+    val memory: CollabMemoryView = CollabMemoryView(),
+    val collection: List<CollabCollectionItem> = emptyList(),
+)
 
 class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val profiles = ProfileStore(application)
@@ -109,12 +170,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val offline = OfflineStore(application)
     private val transport = OkHttpTransport()
     private val api = HostApi(transport)
-    private val pairing = PairingCoordinator(PairingClient(transport), api)
+    private val pairingClient = PairingClient(transport)
+    private val pairing = PairingCoordinator(pairingClient, api)
     private val socket = EventSocket()
-    private val sessions = mutableMapOf<String, TimelineSession>()
-    private val subscriptions = mutableMapOf<String, String>()
+    private val sessions = java.util.concurrent.ConcurrentHashMap<String, TimelineSession>()
+    private val subscriptions = java.util.concurrent.ConcurrentHashMap<String, String>()
     private var pingJob: Job? = null
     private var timelinePollJob: Job? = null
+    private var connectPollJob: Job? = null
+    private var autoReconnectJob: Job? = null
     @Volatile
     private var boostPollingUntil: Long = 0L
 
@@ -137,6 +201,174 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         )
         if (stored.profiles.isNotEmpty()) {
             connectSelected()
+        } else {
+            discoverHosts(autoRequestIfSingle = true)
+        }
+        startAutoReconnectLoop()
+    }
+
+    private fun startAutoReconnectLoop() {
+        autoReconnectJob?.cancel()
+        autoReconnectJob = viewModelScope.launch {
+            while (isActive) {
+                delay(5_000)
+                val current = _state.value
+                if (current.profiles.isNotEmpty()) {
+                    if (
+                        current.connection == ConnectionState.Offline ||
+                        current.connection == ConnectionState.Recovering ||
+                        current.connection == ConnectionState.HostSleeping
+                    ) {
+                        val profile = selectedProfile()
+                        if (profile != null) {
+                            connect(profile)
+                        }
+                    }
+                } else if (
+                    current.pendingConnectSasCode == null &&
+                    !current.discoveringHosts &&
+                    !current.pairing
+                ) {
+                    discoverHosts(autoRequestIfSingle = true)
+                }
+            }
+        }
+    }
+
+    fun discoverHosts(autoRequestIfSingle: Boolean = false) {
+        if (_state.value.discoveringHosts) return
+        viewModelScope.launch {
+            _state.update { it.copy(discoveringHosts = true) }
+            val knownRelayOrigins = _state.value.profiles.flatMap { p -> p.reachability.map { it.origin } }
+            val found = withContext(Dispatchers.IO) {
+                runCatching { PairingClient.discoverLanHosts(extraRelayOrigins = knownRelayOrigins) }
+                    .getOrDefault(emptyList())
+            }
+            _state.update { it.copy(discoveredHosts = found, discoveringHosts = false) }
+            if (
+                autoRequestIfSingle &&
+                found.size == 1 &&
+                _state.value.profiles.isEmpty() &&
+                _state.value.pendingConnectSasCode == null &&
+                !_state.value.pairing
+            ) {
+                requestConnectToHost(found.first())
+            }
+        }
+    }
+
+    fun requestConnectToHost(host: DiscoveredLanHost) {
+        val current = _state.value
+        if (current.pendingConnectSasCode != null && current.pendingConnectOrigin == host.origin) {
+            return
+        }
+        connectPollJob?.cancel()
+        connectPollJob = viewModelScope.launch {
+            _state.update { it.copy(pairing = true, error = null) }
+            val origin = runCatching { HostOrigin.parse(host.origin) }.getOrNull() ?: run {
+                _state.update { it.copy(pairing = false, error = "无效电脑地址") }
+                return@launch
+            }
+            if (origin.value.contains("/t/")) {
+                PairingClient.rememberRelayBase(origin.value)
+            }
+            val requested = withContext(Dispatchers.IO) {
+                runCatching {
+                    pairingClient.requestConnect(
+                        origin = origin,
+                        deviceName = Build.MODEL.ifBlank { "Android Companion" },
+                    )
+                }
+            }.getOrElse { err ->
+                _state.update { it.copy(pairing = false) }
+                fail(err)
+                return@launch
+            }
+
+            _state.update {
+                it.copy(
+                    pairing = false,
+                    pendingConnectSasCode = requested.sasCode,
+                    pendingConnectHostName = requested.hostName ?: host.name,
+                    pendingConnectOrigin = origin.value,
+                    error = null,
+                )
+            }
+
+            while (isActive) {
+                delay(1_500)
+                val poll = withContext(Dispatchers.IO) {
+                    runCatching { pairingClient.pollConnect(origin, requested.requestId) }.getOrNull()
+                } ?: continue
+
+                when (poll.status) {
+                    "approved" -> {
+                        val cred = poll.credential
+                        if (cred != null) {
+                            val resolvedHostId = poll.hostId.ifBlank { host.hostId ?: "host:${origin.value}" }
+                            credentials.put(resolvedHostId, cred.access_token)
+                            val displayHost = (poll.hostName ?: host.name).ifBlank {
+                                origin.value.removePrefix("http://").removePrefix("https://").substringBefore(":")
+                            }
+                            val profile = HostProfile(
+                                hostId = resolvedHostId,
+                                name = if (displayHost.startsWith("VibeX", ignoreCase = true)) displayHost else "VibeX ($displayHost)",
+                                deviceId = cred.device_id,
+                                reachability = listOf(StoredReachability(origin.value, "lan")),
+                                lastSuccessOrigin = origin.value,
+                                lastSyncAt = System.currentTimeMillis(),
+                                selectedProjectId = null,
+                            )
+                            upsertProfile(profile, selected = true)
+                            _state.update {
+                                it.copy(
+                                    pendingConnectSasCode = null,
+                                    pendingConnectHostName = null,
+                                    pendingConnectOrigin = null,
+                                    notice = "已连接电脑 $displayHost",
+                                    route = Route.Conversations,
+                                )
+                            }
+                            connect(profile)
+                            break
+                        }
+                    }
+                    "rejected" -> {
+                        _state.update {
+                            it.copy(
+                                pendingConnectSasCode = null,
+                                pendingConnectHostName = null,
+                                pendingConnectOrigin = null,
+                                error = "电脑端已忽略连接请求",
+                            )
+                        }
+                        break
+                    }
+                    "expired" -> {
+                        _state.update {
+                            it.copy(
+                                pendingConnectSasCode = null,
+                                pendingConnectHostName = null,
+                                pendingConnectOrigin = null,
+                                error = "连接请求已超时，请重新点击连接",
+                            )
+                        }
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    fun cancelPendingConnectRequest() {
+        connectPollJob?.cancel()
+        connectPollJob = null
+        _state.update {
+            it.copy(
+                pendingConnectSasCode = null,
+                pendingConnectHostName = null,
+                pendingConnectOrigin = null,
+            )
         }
     }
 
@@ -148,9 +380,16 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch { runCatching { loadConversations() }.onFailure { fail(it) } }
     }
 
+    fun selectProjectInPlace(projectId: String?) {
+        val profile = selectedProfile()?.copy(selectedProjectId = projectId) ?: return
+        upsertProfile(profile, selected = true)
+        _state.update { it.copy(selectedProjectId = projectId) }
+        viewModelScope.launch { runCatching { loadConversations() }.onFailure { fail(it) } }
+    }
+
     fun loadCatalogSilent() {
         viewModelScope.launch {
-            runCatching { fetchCatalog(openNew = false) }.onFailure { fail(it) }
+            runCatching { fetchCatalog() }.onFailure { fail(it) }
         }
     }
 
@@ -280,18 +519,18 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private fun startTimelinePoller(id: String) {
         timelinePollJob?.cancel()
         timelinePollJob = viewModelScope.launch {
-            delay(350)
+            delay(800)
             while (isActive && (_state.value.route as? Route.Timeline)?.conversationId == id) {
-                runCatching { syncConversationTimeline(id) }
                 val session = sessions[id]
                 val fast = session?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil
+                runCatching { syncConversationTimeline(id, forceRows = fast) }
                 if (fast) {
-                    delay(250)
+                    delay(900)
                 } else {
-                    for (step in 0 until 5) {
+                    for (step in 0 until 8) {
                         if (!isActive || (_state.value.route as? Route.Timeline)?.conversationId != id) break
                         if (sessions[id]?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil) break
-                        delay(240)
+                        delay(450)
                     }
                 }
             }
@@ -495,7 +734,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 val created = withContext(Dispatchers.IO) {
                     api.createWorkspace(origin, token, projectId, name, branch)
                 }
-                fetchCatalog(openNew = false)
+                fetchCatalog()
                 onCreated(created.id)
             }.onFailure { fail(it) }
         }
@@ -603,9 +842,124 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun respondPermission(
+        conversationId: String,
+        permissionId: String,
+        optionId: String?,
+        persist: Boolean = false,
+        onDone: () -> Unit = {},
+    ) {
+        if (!_state.value.connection.allowsWrites) {
+            onDone()
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                boostPollingUntil = System.currentTimeMillis() + 30_000L
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) {
+                    api.respondPermission(origin, token, conversationId, permissionId, optionId, persist)
+                }
+                sessions[conversationId]?.let { session ->
+                    if (session.permissionPrompt?.id == permissionId) {
+                        session.permissionPrompt = null
+                    }
+                    session.rows.replaceAll { row ->
+                        if (row.pendingKind == dev.vibex.companion.PendingKind.Permission && row.pendingId == permissionId) {
+                            row.copy(pendingKind = null, tone = dev.vibex.companion.TimelineTone.Quiet)
+                        } else {
+                            row
+                        }
+                    }
+                    publishTimeline(session)
+                }
+                syncConversationTimeline(conversationId)
+            }.onFailure { fail(it) }
+            onDone()
+        }
+    }
+
+    fun respondQuestionContent(
+        conversationId: String,
+        questionId: String,
+        content: dev.vibex.remote.v1.JsonValue?,
+        onDone: () -> Unit = {},
+    ) {
+        if (!_state.value.connection.allowsWrites) {
+            onDone()
+            return
+        }
+        viewModelScope.launch {
+            runCatching {
+                boostPollingUntil = System.currentTimeMillis() + 30_000L
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) {
+                    api.respondQuestion(origin, token, conversationId, questionId, content)
+                }
+                sessions[conversationId]?.let { session ->
+                    if (session.pendingQuestion?.id == questionId) {
+                        session.pendingQuestion = null
+                    }
+                    session.rows.replaceAll { row ->
+                        if (row.pendingKind == dev.vibex.companion.PendingKind.Question && row.pendingId == questionId) {
+                            row.copy(pendingKind = null, tone = dev.vibex.companion.TimelineTone.Quiet)
+                        } else {
+                            row
+                        }
+                    }
+                    publishTimeline(session)
+                }
+                syncConversationTimeline(conversationId)
+            }.onFailure { fail(it) }
+            onDone()
+        }
+    }
+
+    fun fetchWorkspaceTree(
+        workspaceId: String,
+        path: String = "",
+        onResult: (Result<dev.vibex.companion.WorkspaceTree>) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) { api.workspaceTree(origin, token, workspaceId, path) }
+            }
+            onResult(result)
+        }
+    }
+
+    fun fetchWorkspaceFile(
+        workspaceId: String,
+        path: String,
+        onResult: (Result<dev.vibex.companion.WorkspaceFile>) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) { api.workspaceFile(origin, token, workspaceId, path) }
+            }
+            onResult(result)
+        }
+    }
+
+    fun fetchWorkspaceDiff(
+        workspaceId: String,
+        conversationId: String = "",
+        onResult: (Result<List<dev.vibex.companion.FileDiff>>) -> Unit,
+    ) {
+        viewModelScope.launch {
+            val result = runCatching {
+                val (origin, token) = live()
+                withContext(Dispatchers.IO) { api.workspaceDiff(origin, token, workspaceId, conversationId) }
+            }
+            onResult(result)
+        }
+    }
+
     fun loadCatalog() {
         viewModelScope.launch {
-            runCatching { fetchCatalog(openNew = false) }.onFailure { fail(it) }
+            runCatching { fetchCatalog() }.onFailure { fail(it) }
         }
     }
 
@@ -775,7 +1129,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun fetchCatalog(openNew: Boolean) {
+    private suspend fun fetchCatalog() {
         _state.update { it.copy(catalogLoading = true) }
         try {
             val (origin, token) = live()
@@ -788,7 +1142,6 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     catalog = catalog,
                     catalogLoading = false,
                     selectedProjectId = resolvedProject,
-                    route = if (openNew) Route.NewConversation else it.route,
                     error = null,
                 )
             }
@@ -836,6 +1189,21 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         connect(profile)
     }
 
+    private fun inferTransportPath(originUrl: String, profile: HostProfile): String {
+        val lower = originUrl.lowercase()
+        if (lower.contains("://127.0.0.1") || lower.contains("://localhost")) return "USB / 本机直连"
+        if (Regex("""^https?://100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.""").containsMatchIn(lower)) {
+            return "Tailscale P2P"
+        }
+        val kind = profile.reachability.find { it.origin == originUrl }?.kind?.lowercase()
+        if (kind == "webrtc") return "WebRTC P2P"
+        if (lower.contains("vibex.xforever.xin")) return "VibeX 云服务 · Beta"
+        if (kind == "published" || kind == "tunnel" || lower.startsWith("https://")) return "云服务 · Beta"
+        val isPrivateLan = Regex("""^http://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)
+        if (!isPrivateLan) return "云服务 · Beta"
+        return "LAN 局域网直连"
+    }
+
     private suspend fun connect(profile: HostProfile) {
         if (
             _state.value.connection == ConnectionState.Online &&
@@ -845,54 +1213,208 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             loadCatalogSilent()
             return
         }
-        _state.update { it.copy(connection = ConnectionState.Connecting, error = null, triedOrigins = emptyList()) }
+        _state.update {
+            it.copy(
+                connection = if (it.connection == ConnectionState.Recovering) ConnectionState.Recovering else ConnectionState.Connecting,
+                error = null,
+                triedOrigins = emptyList(),
+            )
+        }
         val token = credentials.get(profile.hostId)
         if (token.isNullOrBlank()) {
-            _state.update { it.copy(connection = ConnectionState.AuthRequired) }
+            _state.update {
+                it.copy(
+                    connection = ConnectionState.AuthRequired,
+                    realtimeRttMs = null,
+                    connectionFailureReason = "授权已撤销",
+                )
+            }
             return
         }
         val targets = profile.reachability.map {
+            if (it.origin.contains("/t/")) {
+                PairingClient.rememberRelayBase(it.origin)
+            }
             ReachabilityTarget(HostOrigin.parse(it.origin), it.kind)
-        }
-        val order = OriginOrder.probeOrder(targets, profile.lastSuccessOrigin)
+        }.toMutableList()
+        val order = OriginOrder.probeOrder(targets, profile.lastSuccessOrigin).toMutableList()
         val tried = mutableListOf<String>()
         var lastError: Exception? = null
-        for (origin in order) {
+        val connectStartMs = System.currentTimeMillis()
+
+        fun isLanOriginUrl(url: String): Boolean {
+            val lower = url.lowercase()
+            if (lower.contains("/t/")) return false
+            return lower.contains("://127.0.0.1") ||
+                lower.contains("://10.0.2.2") ||
+                lower.contains("://localhost") ||
+                Regex("""^http://(192\.168\.|10\.|172\.(1[6-9]|2\d|3[0-1])\.)""").containsMatchIn(lower)
+        }
+
+        suspend fun tryConnectOrigin(origin: HostOrigin): Boolean {
             tried += origin.value
-            try {
-                val caps = withContext(Dispatchers.IO) { api.capabilities(origin, token) }
-                if (caps.protocol_version.substringBefore('.') != "1") {
-                    _state.update { it.copy(connection = ConnectionState.Incompatible, triedOrigins = tried) }
-                    return
-                }
-                upsertProfile(profile.copy(lastSuccessOrigin = origin.value, lastSyncAt = System.currentTimeMillis()), true)
+            val VerifyHost = withContext(Dispatchers.IO) {
+                PairingClient.probeHostHealth(
+                    originUrl = origin.value,
+                    timeoutMs = if (isLanOriginUrl(origin.value)) 350 else 1800,
+                    expectedHostId = profile.hostId.takeUnless { it.startsWith("host:") },
+                )
+            }
+            if (VerifyHost == null) {
+                throw IllegalStateException("Host health check or tenant identity verification failed for ${origin.value}")
+            }
+            val (caps, serverReachability) = withContext(Dispatchers.IO) {
+                api.capabilitiesWithReachability(origin, token)
+            }
+            val totalDuration = (System.currentTimeMillis() - connectStartMs).coerceAtLeast(1L)
+            if (caps.protocol_version.substringBefore('.') != "1") {
                 _state.update {
                     it.copy(
-                        connection = ConnectionState.Online,
-                        activeOrigin = origin.value,
+                        connection = ConnectionState.Incompatible,
                         triedOrigins = tried,
-                        hostVersion = caps.server_version,
-                        hostProtocol = caps.protocol_version,
-                        hostCapabilities = caps.capabilities,
+                        realtimeRttMs = null,
+                        connectionFailureReason = "协议版本不兼容 (${caps.protocol_version})",
                     )
                 }
-                bindSocket(origin.value, token)
-                loadCatalogSilent()
-                if (_state.value.selectedProjectId != null) {
-                    loadConversations()
+                return true
+            }
+            val warmRttMs = withContext(Dispatchers.IO) {
+                val t0 = System.nanoTime()
+                val ok = runCatching { api.health(origin) }.isSuccess
+                if (ok) ((System.nanoTime() - t0) / 1_000_000L).coerceAtLeast(1L) else null
+            }
+            val syncedTargets = serverReachability.map {
+                if (it.origin.value.contains("/t/")) {
+                    PairingClient.rememberRelayBase(it.origin.value)
                 }
-                return
+                StoredReachability(it.origin.value, it.kind)
+            }
+            val selfKind = if (origin.value.startsWith("https://") || origin.value.contains("/t/")) "published" else "lan"
+            val mergedReachability = (syncedTargets + profile.reachability + StoredReachability(origin.value, selfKind))
+                .filterNot { it.origin.contains(":17890") }
+                .distinctBy { it.origin }
+            val updatedProfile = profile.copy(
+                reachability = mergedReachability,
+                lastSuccessOrigin = origin.value,
+                lastSyncAt = System.currentTimeMillis(),
+            )
+            upsertProfile(updatedProfile, true)
+            _state.update {
+                it.copy(
+                    connection = ConnectionState.Online,
+                    activeOrigin = origin.value,
+                    triedOrigins = tried,
+                    hostVersion = caps.server_version,
+                    hostProtocol = caps.protocol_version,
+                    hostCapabilities = caps.capabilities,
+                    lastConnectDurationMs = totalDuration,
+                    realtimeRttMs = warmRttMs,
+                    transportPath = inferTransportPath(origin.value, updatedProfile),
+                    connectionFailureReason = null,
+                    error = null,
+                )
+            }
+            bindSocket(origin.value, token)
+            loadCatalogSilent()
+            return true
+        }
+
+        // Happy Eyeballs Step 1: Give LAN candidates a fast priority window (350ms probe)
+        val (lanCandidates, remoteCandidates) = order.partition { isLanOriginUrl(it.value) }
+        for (origin in lanCandidates) {
+            try {
+                if (tryConnectOrigin(origin)) return
             } catch (error: AuthRequiredException) {
-                _state.update { it.copy(connection = ConnectionState.AuthRequired, triedOrigins = tried) }
+                _state.update {
+                    it.copy(
+                        connection = ConnectionState.AuthRequired,
+                        triedOrigins = tried,
+                        realtimeRttMs = null,
+                        connectionFailureReason = "授权已撤销",
+                    )
+                }
                 return
             } catch (error: Exception) {
                 lastError = error
             }
         }
+
+        // Happy Eyeballs Step 2: Domestic Cloud Relay / Published origins
+        val knownOriginStrings = profile.reachability.map { it.origin }
+        val rendezvousOrigins = withContext(Dispatchers.IO) {
+            runCatching { PairingClient.resolveHostRendezvous(profile.hostId, knownOrigins = knownOriginStrings) }
+                .getOrDefault(emptyList())
+        }
+        val cleanRemoteCandidates = remoteCandidates.map { it.value }.filterNot { url ->
+            val lower = url.lowercase()
+            lower.contains("serveousercontent.com") ||
+                lower.contains("serveo.net") ||
+                lower.contains("lhr.life") ||
+                lower.contains(":17890") ||
+                lower.contains(":17891")
+        }
+        val combinedRemote = (rendezvousOrigins + cleanRemoteCandidates).distinct()
+        for (rawOrigin in combinedRemote) {
+            if (tried.contains(rawOrigin)) continue
+            val parsedOrigin = runCatching { HostOrigin.parse(rawOrigin) }.getOrNull() ?: continue
+            try {
+                if (tryConnectOrigin(parsedOrigin)) return
+            } catch (error: AuthRequiredException) {
+                _state.update {
+                    it.copy(
+                        connection = ConnectionState.AuthRequired,
+                        triedOrigins = tried,
+                        realtimeRttMs = null,
+                        connectionFailureReason = "授权已撤销",
+                    )
+                }
+                return
+            } catch (error: Exception) {
+                lastError = error
+            }
+        }
+
+        // Step 3: If LAN IP changed via DHCP or AP-isolated same-net relay discovery
+        val discovered = withContext(Dispatchers.IO) {
+            runCatching { PairingClient.discoverLanHosts(extraRelayOrigins = knownOriginStrings) }
+                .getOrDefault(emptyList())
+        }
+        val matchedHost = discovered.find { it.hostId == profile.hostId } ?: discovered.firstOrNull {
+            profile.hostId.startsWith("host:")
+        }
+        if (matchedHost != null && !tried.contains(matchedHost.origin)) {
+            runCatching { HostOrigin.parse(matchedHost.origin) }.getOrNull()?.let { discoveredOrigin ->
+                try {
+                    if (tryConnectOrigin(discoveredOrigin)) return
+                } catch (error: AuthRequiredException) {
+                    _state.update {
+                        it.copy(
+                            connection = ConnectionState.AuthRequired,
+                            triedOrigins = tried,
+                            realtimeRttMs = null,
+                            connectionFailureReason = "授权已撤销",
+                        )
+                    }
+                    return
+                } catch (error: Exception) {
+                    lastError = error
+                }
+            }
+        }
+
+        val errMsg = lastError?.message.orEmpty()
+        val failureReason = when {
+            errMsg.contains("sleep", ignoreCase = true) -> "电脑已休眠"
+            errMsg.contains("Network is unreachable", ignoreCase = true) ||
+                errMsg.contains("EHOSTUNREACH", ignoreCase = true) -> "网络受限"
+            else -> "电脑离线"
+        }
         _state.update {
             it.copy(
-                connection = ConnectionState.Offline,
+                connection = if (failureReason == "电脑已休眠") ConnectionState.HostSleeping else ConnectionState.Offline,
                 triedOrigins = tried,
+                realtimeRttMs = null,
+                connectionFailureReason = failureReason,
                 error = lastError?.message,
             )
         }
@@ -910,22 +1432,35 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
             },
+            onPongRttMs = { rttMs ->
+                val normalizedRtt = if (origin.contains("/t/")) (rttMs / 2L).coerceAtLeast(1L) else rttMs
+                _state.update { it.copy(realtimeRttMs = normalizedRtt) }
+            },
             onEvent = { subscriptionId, event ->
                 val conversationId = subscriptions[subscriptionId] ?: (_state.value.route as? Route.Timeline)?.conversationId ?: return@connect
                 val session = sessions[conversationId] ?: return@connect
-                EventFold.apply(session, event)
-                offline.save(conversationId, session.lastSequence, emptyList())
+                synchronized(session) {
+                    EventFold.apply(session, event)
+                }
                 publishTimeline(session)
             },
             onSnapshot = { subscriptionId, payload ->
                 val conversationId = subscriptions[subscriptionId] ?: (_state.value.route as? Route.Timeline)?.conversationId ?: return@connect
                 val session = sessions.getOrPut(conversationId) { TimelineSession().also { it.conversationId = conversationId } }
-                EventFold.applySnapshot(session, payload)
+                synchronized(session) {
+                    EventFold.applySnapshot(session, payload)
+                }
                 publishTimeline(session)
             },
             onClosed = { reason ->
                 if (reason == "auth") {
-                    _state.update { it.copy(connection = ConnectionState.AuthRequired) }
+                    _state.update {
+                        it.copy(
+                            connection = ConnectionState.AuthRequired,
+                            realtimeRttMs = null,
+                            connectionFailureReason = "授权已撤销",
+                        )
+                    }
                 } else if (_state.value.connection == ConnectionState.Online) {
                     _state.update { it.copy(connection = ConnectionState.Recovering) }
                     viewModelScope.launch {
@@ -939,9 +1474,25 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         )
         pingJob?.cancel()
         pingJob = viewModelScope.launch {
+            var tick = 0
             while (isActive) {
-                delay(20_000)
+                delay(10_000)
                 socket.ping()
+                tick += 1
+                if (tick % 3 == 0) {
+                    val refreshed = withContext(Dispatchers.IO) {
+                        runCatching { api.capabilitiesWithReachability(HostOrigin.parse(origin), token) }.getOrNull()
+                    }
+                    if (refreshed != null) {
+                        val synced = refreshed.second.map { StoredReachability(it.origin.value, it.kind) }
+                        selectedProfile()?.let { currentProfile ->
+                            val merged = (synced + currentProfile.reachability).distinctBy { it.origin }
+                            if (merged != currentProfile.reachability) {
+                                upsertProfile(currentProfile.copy(reachability = merged), true)
+                            }
+                        }
+                    }
+                }
             }
         }
     }
@@ -956,43 +1507,53 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 it.workspaceId = summary?.workspaceId.orEmpty()
             }
         }
-        if (session.agentId.isBlank()) session.agentId = summary?.agentId.orEmpty()
-        if (session.workspaceId.isBlank()) session.workspaceId = summary?.workspaceId.orEmpty()
-        val cached = offline.load(id)
-        if (cached.second.isNotEmpty()) {
-            EventFold.applyAll(session, cached.second)
-            publishTimeline(session)
+        synchronized(session) {
+            if (session.agentId.isBlank()) session.agentId = summary?.agentId.orEmpty()
+            if (session.workspaceId.isBlank()) session.workspaceId = summary?.workspaceId.orEmpty()
+        }
+        if (synchronized(session) { session.rows.isEmpty() }) {
+            val cached = withContext(Dispatchers.IO) { offline.load(id) }
+            if (cached.second.isNotEmpty()) {
+                synchronized(session) {
+                    EventFold.applyAll(session, cached.second)
+                }
+                publishTimeline(session)
+            }
         }
         if (!_state.value.connection.allowsWrites && _state.value.connection != ConnectionState.Online) {
             return
         }
-        val after = session.lastSequence
+        val after = synchronized(session) { session.lastSequence }
         val subscriptionId = socket.attach(id, after)
         subscriptions[subscriptionId] = id
         runCatching {
             val (origin, token) = live()
-            syncConversationTimeline(id)
-            if (session.sessionModes.isEmpty() && session.sessionConfig.isEmpty()) {
+            syncConversationTimeline(id, forceRows = true)
+            val needControls = synchronized(session) {
+                session.sessionModes.isEmpty() && session.sessionConfig.isEmpty()
+            }
+            if (needControls) {
                 val controls = withContext(Dispatchers.IO) {
                     api.ensureSessionControls(origin, token, id)
                 }
-                EventFold.applySessionControls(session, controls)
+                synchronized(session) {
+                    EventFold.applySessionControls(session, controls)
+                }
             }
             val skills = withContext(Dispatchers.IO) {
-                api.listSlashCommands(
-                    origin,
-                    token,
-                    session.agentId.ifBlank { summary?.agentId.orEmpty() },
-                    session.workspaceId.ifBlank { summary?.workspaceId.orEmpty() },
-                )
+                val agId = synchronized(session) { session.agentId }.ifBlank { summary?.agentId.orEmpty() }
+                val wsId = synchronized(session) { session.workspaceId }.ifBlank { summary?.workspaceId.orEmpty() }
+                api.listSlashCommands(origin, token, agId, wsId)
             }
-            session.skillCommands.clear()
-            session.skillCommands += skills
+            synchronized(session) {
+                session.skillCommands.clear()
+                session.skillCommands += skills
+            }
             publishTimeline(session)
         }
     }
 
-    private suspend fun syncConversationTimeline(id: String) {
+    private suspend fun syncConversationTimeline(id: String, forceRows: Boolean = true) {
         val summary = _state.value.conversations.find { it.id == id }
         val session = sessions.getOrPut(id) {
             TimelineSession().also {
@@ -1002,23 +1563,37 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 it.workspaceId = summary?.workspaceId.orEmpty()
             }
         }
-        if (session.agentId.isBlank()) session.agentId = summary?.agentId.orEmpty()
-        if (session.workspaceId.isBlank()) session.workspaceId = summary?.workspaceId.orEmpty()
+        val (afterSeq, wasEmpty) = synchronized(session) {
+            if (session.agentId.isBlank()) session.agentId = summary?.agentId.orEmpty()
+            if (session.workspaceId.isBlank()) session.workspaceId = summary?.workspaceId.orEmpty()
+            session.lastSequence to session.rows.isEmpty()
+        }
         val (origin, token) = live()
         val events = withContext(Dispatchers.IO) {
-            runCatching { api.offlineEvents(origin, token, id, session.lastSequence) }.getOrDefault(emptyList())
+            runCatching { api.offlineEvents(origin, token, id, afterSeq) }.getOrDefault(emptyList())
         }
         if (events.isNotEmpty()) {
-            EventFold.applyAll(session, events)
-            offline.save(id, session.lastSequence, events)
+            val latestSeq = synchronized(session) {
+                EventFold.applyAll(session, events)
+                session.lastSequence
+            }
+            withContext(Dispatchers.IO) {
+                offline.save(id, latestSeq, events)
+            }
         }
-        val rawRows = withContext(Dispatchers.IO) {
-            api.timelineRows(origin, token, id)
+        if (forceRows || wasEmpty || events.isNotEmpty()) {
+            val rawRows = withContext(Dispatchers.IO) {
+                api.timelineRows(origin, token, id)
+            }
+            if (rawRows.isNotEmpty()) {
+                synchronized(session) {
+                    EventFold.applyTimelineRows(session, rawRows)
+                }
+            }
         }
-        if (rawRows.isNotEmpty()) {
-            EventFold.applyTimelineRows(session, rawRows)
+        if (forceRows || wasEmpty || events.isNotEmpty()) {
+            publishTimeline(session)
         }
-        publishTimeline(session)
     }
 
     private suspend fun loadConversations() {
@@ -1042,12 +1617,10 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             _state.update { it.copy(conversations = merged, conversationsLoading = false, error = null) }
-            merged.take(8).forEach { summary ->
-                viewModelScope.launch {
+            viewModelScope.launch(Dispatchers.IO) {
+                var anyChanged = false
+                merged.take(6).forEach { summary ->
                     runCatching {
-                        val events = withContext(Dispatchers.IO) {
-                            api.offlineEvents(origin, token, summary.id, 0)
-                        }
                         val session = sessions.getOrPut(summary.id) {
                             TimelineSession().also {
                                 it.conversationId = summary.id
@@ -1056,9 +1629,20 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                 it.workspaceId = summary.workspaceId
                             }
                         }
-                        EventFold.applyAll(session, events)
-                        rebuildInbox()
+                        val afterSeq = synchronized(session) { session.lastSequence }
+                        if (afterSeq == 0L || summary.status.equals("inprogress", ignoreCase = true)) {
+                            val events = api.offlineEvents(origin, token, summary.id, afterSeq)
+                            if (events.isNotEmpty()) {
+                                synchronized(session) {
+                                    EventFold.applyAll(session, events)
+                                }
+                                anyChanged = true
+                            }
+                        }
                     }
+                }
+                if (anyChanged) {
+                    rebuildInbox()
                 }
             }
         } catch (error: Throwable) {
@@ -1069,14 +1653,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun publishTimeline(session: TimelineSession) {
         if ((_state.value.route as? Route.Timeline)?.conversationId == session.conversationId) {
-            _state.update { it.copy(timeline = session.snapshot()) }
+            val snap = synchronized(session) { session.snapshot() }
+            _state.update { if (it.timeline == snap) it else it.copy(timeline = snap) }
         }
         rebuildInbox()
     }
 
     private fun rebuildInbox() {
-        val items = sessions.values.flatMap { EventFold.pendingItems(it) }
-        _state.update { it.copy(inbox = items) }
+        val items = sessions.values.flatMap { session ->
+            synchronized(session) { EventFold.pendingItems(session) }
+        }
+        _state.update { if (it.inbox == items) it else it.copy(inbox = items) }
     }
 
     private fun upsertProfile(profile: HostProfile, selected: Boolean) {
@@ -1088,7 +1675,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     private fun persist(transform: (StoredState) -> StoredState) {
         val next = transform(StoredState(_state.value.selectedHostId, _state.value.profiles, _state.value.appearance, _state.value.streamDisplay, _state.value.accent))
-        profiles.save(next)
+        viewModelScope.launch(Dispatchers.IO) {
+            profiles.save(next)
+        }
     }
 
     private fun selectedProfile(): HostProfile? =
@@ -1103,7 +1692,245 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         return HostOrigin.parse(origin) to token
     }
 
-    private fun fail(error: Throwable) {
+    fun activeWorkspaceIdForProject(projectId: String?): String {
+        val state = _state.value
+        val pid = projectId ?: state.selectedProjectId ?: state.catalog?.projects?.firstOrNull()?.id
+        return state.catalog?.workspaces.orEmpty()
+            .firstOrNull { pid == null || it.projectId == pid }?.id
+            ?: state.conversations.firstOrNull()?.workspaceId.orEmpty()
+    }
+
+    suspend fun fetchKanbanSessions(projectId: String?): List<KanbanSessionSummary> {
+        val (origin, token) = live()
+        val catalog = _state.value.catalog ?: withContext(Dispatchers.IO) { api.catalog(origin, token) }
+        val wsIds = if (!projectId.isNullOrBlank()) {
+            catalog.workspaces.filter { it.projectId.equals(projectId, ignoreCase = true) }.map { it.id }
+        } else {
+            catalog.workspaces.map { it.id }
+        }
+        return withContext(Dispatchers.IO) {
+            api.kanbanAllSessions(origin, token, wsIds)
+        }
+    }
+
+    suspend fun fetchMonitorPreview(sessionId: String): String? {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            val rows = runCatching { api.timelineRows(origin, token, sessionId) }.getOrNull().orEmpty()
+            val temp = TimelineSession().also { it.conversationId = sessionId }
+            EventFold.applyTimelineRows(temp, rows)
+            temp.rows.lastOrNull { it.body.isNotBlank() }?.body
+        }
+    }
+
+    suspend fun mutateKanbanSessionStatus(sessionId: String, status: KanbanSessionStatus) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) { api.updateKanbanSessionStatus(origin, token, sessionId, status) }
+        runCatching { loadConversations() }
+    }
+
+    suspend fun mutateKanbanSessionPinned(sessionId: String, pinned: Boolean) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) { api.setKanbanSessionPinned(origin, token, sessionId, pinned) }
+        runCatching { loadConversations() }
+    }
+
+    suspend fun mutateKanbanSessionRename(sessionId: String, name: String?) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) { api.renameKanbanSession(origin, token, sessionId, name) }
+        runCatching { loadConversations() }
+    }
+
+    suspend fun mutateKanbanSessionDelete(sessionId: String) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) { api.deleteKanbanSession(origin, token, sessionId) }
+        runCatching { loadConversations() }
+    }
+
+    suspend fun mutateKanbanSessionViewed(sessionId: String) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) { api.markKanbanSessionViewed(origin, token, sessionId) }
+    }
+
+    suspend fun mutateKanbanSessionFork(sessionId: String): String? {
+        val (origin, token) = live()
+        val forkedId = withContext(Dispatchers.IO) { api.forkKanbanConversation(origin, token, sessionId) }
+        runCatching { loadConversations() }
+        return forkedId
+    }
+
+    suspend fun fetchUsageStatistics(
+        scope: String,
+        projectId: String?,
+        dateRange: UsageDateRange,
+    ): ProjectUsageStatistics {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            api.projectUsageStatistics(origin, token, scope, projectId, dateRange)
+        }
+    }
+
+    suspend fun fetchAgentPlanUsage(agentId: String): PlanUsageResponse {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            api.agentPlanUsage(origin, token, agentId)
+        }
+    }
+
+    suspend fun fetchCollabOverview(workspaceId: String): Triple<List<CollabSidebarItem>, List<CollabContactGroup>, List<CollabSpaceSummary>> {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            val items = api.collabSidebar(origin, token, workspaceId)
+            val groups = api.collabContactGroups(origin, token, workspaceId)
+            val spaces = api.collabSpaces(origin, token, workspaceId)
+            Triple(items, groups, spaces)
+        }
+    }
+
+    suspend fun fetchCollabChatState(spaceId: String, isGroup: Boolean): Pair<CollabMessagesPage, List<CollabSpaceMember>> {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            val page = api.collabMessagesPage(origin, token, spaceId)
+            val members = if (isGroup) api.collabSpaceMembers(origin, token, spaceId) else emptyList()
+            page to members
+        }
+    }
+
+    suspend fun postCollabMessage(
+        spaceId: String,
+        content: String,
+        to: List<String> = emptyList(),
+        inReplyTo: String? = null,
+        delaySeconds: Int? = null,
+    ) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collabPostMessage(origin, token, spaceId, content, to, inReplyTo, delaySeconds)
+        }
+    }
+
+    suspend fun reactCollab(spaceId: String, messageId: String, emoji: String) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collabReact(origin, token, spaceId, messageId, emoji)
+        }
+    }
+
+    suspend fun markCollabThreadRead(threadId: String, seq: Int? = null, read: Boolean = true) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            if (read) api.collabMarkRead(origin, token, threadId, seq)
+            else api.collabMarkUnread(origin, token, threadId)
+        }
+    }
+
+    suspend fun execCollabCommand(operation: String, input: Map<String, Any?>) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collaboration(origin, token, operation, input)
+        }
+    }
+
+    suspend fun createCollabAssistantFull(
+        workspaceId: String,
+        name: String,
+        agentId: String?,
+        roleId: String?,
+        personaPrompt: String?,
+        avatar: CollabBotAvatarConfig,
+        isSupervisor: Boolean,
+        targetSpaceId: String? = null,
+    ) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            val convId = api.collabCreateMember(
+                origin = origin,
+                token = token,
+                workspaceId = workspaceId,
+                name = name,
+                agentId = agentId,
+                roleId = roleId,
+                personaPrompt = personaPrompt,
+                avatar = avatar,
+                color = avatar.color,
+                isSupervisor = isSupervisor,
+            )
+            if (!targetSpaceId.isNullOrBlank() && !convId.isNullOrBlank()) {
+                api.collabAddMemberToSpace(origin, token, targetSpaceId, convId, name)
+            }
+        }
+    }
+
+    suspend fun addCollabMemberToSpace(spaceId: String, conversationId: String, nickname: String) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collabAddMemberToSpace(origin, token, spaceId, conversationId, nickname)
+        }
+    }
+
+    suspend fun resolveCollabMemberSession(memberId: String, threadId: String): String? {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            api.collabResolveSession(origin, token, memberId, threadId)
+        }
+    }
+
+    suspend fun resolveCollabPendingCard(
+        cardId: String,
+        decision: String? = null,
+        answer: String? = null,
+        declined: Boolean = false,
+    ) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collabResolveCard(origin, token, cardId, decision, answer, declined)
+        }
+    }
+
+    suspend fun cancelCollabSpaceTurn(spaceId: String, memberId: String) {
+        val (origin, token) = live()
+        withContext(Dispatchers.IO) {
+            api.collabCancelSpaceTurn(origin, token, spaceId, memberId)
+        }
+    }
+
+    suspend fun fetchCollabDetailData(
+        workspaceId: String,
+        spaceId: String,
+        isGroup: Boolean,
+        memberIdentityId: String?,
+    ): CollabDetailBundle {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            val members = if (isGroup) api.collabSpaceMembers(origin, token, spaceId).filter { it.isAgent } else emptyList()
+            val leadId = if (isGroup) {
+                api.collabSpaces(origin, token, workspaceId).firstOrNull { it.spaceId == spaceId }?.leadMemberId.orEmpty()
+            } else ""
+            val memberCfg = if (!isGroup && !memberIdentityId.isNullOrBlank()) {
+                api.collabMemberConfig(origin, token, memberIdentityId)
+            } else null
+            val memory = api.collabMemoryView(origin, token, spaceId, memberIdentityId)
+            val collection = api.collabCollectionItems(origin, token, spaceId)
+            CollabDetailBundle(
+                members = members,
+                leadMemberId = leadId,
+                memberConfig = memberCfg,
+                memory = memory,
+                collection = collection,
+            )
+        }
+    }
+
+    suspend fun fetchRolesAndTeams(workspaceId: String): Pair<List<SubagentRoleItem>, List<CollabTeam>> {
+        val (origin, token) = live()
+        return withContext(Dispatchers.IO) {
+            val roles = api.listSubagentRoles(origin, token, workspaceId)
+            val teams = api.collabTeamsList(origin, token, workspaceId)
+            roles to teams
+        }
+    }
+
+    internal fun fail(error: Throwable) {
         if (error is AuthRequiredException) {
             _state.update { it.copy(connection = ConnectionState.AuthRequired, error = "需要重新配对", pairing = false) }
             return
