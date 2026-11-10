@@ -38,7 +38,7 @@ fun SplashGate(content: @Composable () -> Unit) {
         if (reduceMotion) {
             show = false
         } else {
-            delay(800)
+            delay(180)
             show = false
         }
     }

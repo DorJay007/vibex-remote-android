@@ -1,159 +1,851 @@
 package dev.vibex.companion.app.ui
 
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
-import androidx.compose.ui.draw.shadow
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
-import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.outlined.Forum
-import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
+import androidx.compose.material.icons.rounded.AccountTree
+import androidx.compose.material.icons.rounded.ArrowUpward
+import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.Cancel
+import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.Code
+import androidx.compose.material.icons.rounded.Description
+import androidx.compose.material.icons.rounded.EditNote
+import androidx.compose.material.icons.rounded.ExpandLess
 import androidx.compose.material.icons.rounded.ExpandMore
 import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.GridView
+import androidx.compose.material.icons.rounded.Groups
+import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.UnfoldMore
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
-import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.zIndex
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
+import dev.vibex.companion.ConnectionState
 import dev.vibex.companion.ConversationSummary
+import dev.vibex.companion.SessionConfigChoice
+import dev.vibex.companion.SessionConfigOption
+import dev.vibex.companion.SessionMode
+import dev.vibex.companion.WorkspaceEntry
 import dev.vibex.companion.agentDisplayName
 import dev.vibex.companion.app.CompanionModel
 import dev.vibex.companion.app.Route
 import dev.vibex.companion.app.UiState
+import dev.vibex.companion.app.ui.theme.PlexMono
 import dev.vibex.companion.app.ui.theme.VibexTheme
 import java.time.Duration
 import java.time.Instant
 import java.time.OffsetDateTime
 
+private data class StarterChip(val id: String, val label: String, val prompt: String)
+
+private val starterSuggestions = listOf(
+    StarterChip("arch", "梳理项目架构", "梳理当前项目的整体架构、目录结构与核心模块职责"),
+    StarterChip("bug", "排查近期改动", "检查当前工作区最近的代码改动，排查潜在问题并给出修复方案"),
+    StarterChip("test", "补充单元测试", "为当前工作区最近修改的核心逻辑补充单元测试并运行验证"),
+)
+
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ConversationList(state: UiState, model: CompanionModel) {
+fun ConversationList(
+    state: UiState,
+    model: CompanionModel,
+    onChromeHiddenChange: (Boolean) -> Unit = {},
+) {
     val colors = VibexTheme.colors
-    var showCreate by remember { mutableStateOf(false) }
+    val focusManager = LocalFocusManager.current
+    var isSidebarOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(isSidebarOpen) {
+        onChromeHiddenChange(isSidebarOpen)
+        if (isSidebarOpen) focusManager.clearFocus()
+    }
+    BackHandler(enabled = isSidebarOpen) {
+        isSidebarOpen = false
+    }
+    var sidebarTab by remember { mutableStateOf("conversations") }
+    var sidebarSearch by remember { mutableStateOf("") }
+    var draft by remember { mutableStateOf("") }
+    var selectedAgentId by remember { mutableStateOf<String?>(null) }
+    var composerMenu by remember { mutableStateOf<ComposerMenu?>(null) }
+    var landingModeId by remember { mutableStateOf("auto") }
+    var landingEffortValue by remember { mutableStateOf("medium") }
+    var showProjectSheet by remember { mutableStateOf(false) }
+    var showDiffSheet by remember { mutableStateOf(false) }
+    var showFileBrowserSheet by remember { mutableStateOf(false) }
     var menuId by remember { mutableStateOf<String?>(null) }
     var menuAnchor by remember { mutableStateOf(Offset.Zero) }
-    val listState = rememberLazyListState()
-    val project = state.catalog?.projects?.find { it.id == state.selectedProjectId }
-    val filtered = state.conversations.filter {
-        state.query.isBlank() || it.title.contains(state.query, true) || it.agentId.contains(state.query, true)
+    var expandedProjects by remember { mutableStateOf(setOf<String>()) }
+    var workspaceEntries by remember { mutableStateOf<Map<String, List<WorkspaceEntry>>>(emptyMap()) }
+
+    val projects = state.catalog?.projects.orEmpty()
+    val workspaces = state.catalog?.workspaces.orEmpty()
+    val agents = state.catalog?.agents.orEmpty().let { list ->
+        list.filter { it.usable }.ifEmpty { list }
     }
-    val pinned = filtered.filter { it.pinned }
-    val rest = filtered.filter { !it.pinned }
-    val sections = buildList {
-        if (pinned.isNotEmpty()) add(DaySection("置顶", pinned))
-        addAll(groupByDay(rest))
+    val currentProject = projects.find { it.id == state.selectedProjectId } ?: projects.firstOrNull()
+    val currentWorkspace = workspaces.firstOrNull { it.projectId == currentProject?.id } ?: workspaces.firstOrNull()
+    val currentAgent = agents.find { it.id == selectedAgentId }
+        ?: agents.find { it.id == state.conversations.firstOrNull()?.agentId }
+        ?: agents.firstOrNull()
+
+    LaunchedEffect(projects.size, state.selectedProjectId) {
+        if (state.selectedProjectId == null && projects.isNotEmpty()) {
+            model.selectProject(projects.first().id)
+        }
     }
-    Box(Modifier.fillMaxSize()) {
-        Column(Modifier.fillMaxSize()) {
-            Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                ConversationHeader(state, model)
-                if (state.inbox.isNotEmpty()) {
+
+    val isOnline = state.connection == ConnectionState.Online
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(colors.bg)
+            .pointerInput(isSidebarOpen) {
+                var totalDx = 0f
+                var startX = 0f
+                detectHorizontalDragGestures(
+                    onDragStart = { offset ->
+                        startX = offset.x
+                        totalDx = 0f
+                    },
+                    onHorizontalDrag = { _, dragAmount ->
+                        totalDx += dragAmount
+                    },
+                    onDragEnd = {
+                        if (!isSidebarOpen && startX < 96f && totalDx > 100f) {
+                            isSidebarOpen = true
+                        } else if (isSidebarOpen && totalDx < -100f) {
+                            isSidebarOpen = false
+                        }
+                    },
+                )
+            },
+    ) {
+        // Main Calm AI Chat Landing View (1:1 with iOS ConversationsView.landingWorkspaceView)
+        Column(
+            Modifier
+                .fillMaxSize()
+                .imePadding(),
+        ) {
+            // Top Bar: Sidebar Button | Connection Status | Diff/New Button
+            Row(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(colors.bgElevated)
+                        .clickable { isSidebarOpen = true },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Rounded.Menu, contentDescription = "打开侧边栏", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
+                }
+
+                Spacer(Modifier.weight(1f))
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .size(6.5.dp)
+                            .clip(CircleShape)
+                            .background(if (isOnline) colors.pass else colors.hold),
+                    )
                     Text(
-                        "${state.inbox.size} 条待你处理",
-                        color = colors.hold,
-                        style = MaterialTheme.typography.titleMedium,
-                        modifier = Modifier.clip(ShapeRow).background(colors.hold.copy(0.12f)).clickable {
-                            model.openConversation(state.inbox.first().conversationId)
-                        }.padding(horizontal = 12.dp, vertical = 8.dp),
+                        if (isOnline) "已连接" else connectionLabel(state.connection),
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.textSecondary,
                     )
                 }
-                SearchField(state.query, model::query, "搜索会话")
-            }
-            CompanionRefresh(refreshing = state.conversationsLoading, onRefresh = model::refreshConversations, modifier = Modifier.fillMaxSize()) {
-                when {
-                    state.selectedProjectId == null -> EmptyState(
-                        Icons.Rounded.Folder,
-                        "先选择文件夹",
-                        "在「文件夹」里点一个 Host 项目目录，再同步近 3 天的会话。",
-                        "去选择",
-                        { model.go(Route.Folders) },
-                    )
-                    filtered.isEmpty() && !state.conversationsLoading -> EmptyState(
-                        Icons.Outlined.Forum,
-                        "近 ${state.sinceDays} 天没有会话",
-                        if (state.connection.allowsWrites) "${project?.name ?: "这个项目"}最近没有活动。" else "上次同步 · 只读",
-                        if (state.connection.allowsWrites) "新会话" else null,
-                        if (state.connection.allowsWrites) ({ showCreate = true; model.loadCatalog() }) else null,
-                        state.connection.allowsWrites,
-                    )
-                    else -> LazyColumn(
-                        state = listState,
-                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
-                    ) {
-                        sections.forEach { section ->
-                            item(key = "h-${section.title}") {
-                                Text(section.title, style = MaterialTheme.typography.titleMedium, color = colors.textTertiary, modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp))
+
+                Spacer(Modifier.weight(1f))
+
+                Box(
+                    Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(colors.bgElevated)
+                        .clickable {
+                            if (currentWorkspace != null) {
+                                showDiffSheet = true
                             }
-                            items(section.items, key = { it.id }) { item ->
-                                SessionRow(
-                                    item = item,
-                                    agent = catalogAgent(state, item.agentId),
-                                    onClick = { model.openConversation(item.id) },
-                                    onLongClick = { offset -> menuAnchor = offset; menuId = item.id },
+                        },
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Rounded.Code, contentDescription = "代码差异", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
+                }
+            }
+
+            if (state.inbox.isNotEmpty()) {
+                Row(
+                    Modifier
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(colors.hold.copy(0.14f))
+                        .clickable { model.openConversation(state.inbox.first().conversationId) }
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "${state.inbox.size} 条待你审批或回复",
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.hold,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Icon(Icons.AutoMirrored.Rounded.KeyboardArrowRight, null, tint = colors.hold, modifier = Modifier.size(16.dp))
+                }
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            // Center Focal Area: VibeX Logo + "有什么可以帮你？" + Project Context Pill
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .clickable(
+                        interactionSource = remember { MutableInteractionSource() },
+                        indication = null,
+                    ) { focusManager.clearFocus() }
+                    .padding(horizontal = 24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(14.dp),
+            ) {
+                Box(
+                    Modifier
+                        .size(56.dp)
+                        .shadow(10.dp, RoundedCornerShape(14.dp), ambientColor = Color.Black.copy(0.10f), spotColor = Color.Black.copy(0.14f))
+                        .clip(RoundedCornerShape(14.dp))
+                        .background(colors.bgElevated),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    BrandMark(40.dp)
+                }
+
+                Text(
+                    "有什么可以帮你？",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.textPrimary,
+                    textAlign = TextAlign.Center,
+                )
+
+                // Project Context Pill (1:1 with iOS projectContextPill)
+                Row(
+                    Modifier
+                        .clip(CircleShape)
+                        .background(colors.bgElevated)
+                        .border(0.6.dp, colors.stroke, CircleShape)
+                        .clickable { showProjectSheet = true }
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(Icons.Rounded.Folder, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                    Text(
+                        currentProject?.name ?: "选择项目",
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    val branch = currentWorkspace?.branch?.ifBlank { "main" } ?: "main"
+                    Text("·", color = colors.textTertiary, fontSize = 13.sp)
+                    Icon(Icons.Rounded.AccountTree, null, tint = colors.textSecondary, modifier = Modifier.size(12.dp))
+                    Text(branch, fontSize = 12.5.sp, color = colors.textSecondary)
+                    Icon(Icons.Rounded.UnfoldMore, null, tint = colors.textTertiary, modifier = Modifier.size(14.dp))
+                }
+            }
+
+            Spacer(Modifier.weight(1f))
+
+            // Quiet Starter Suggestion Chips (shown when draft is empty)
+            if (draft.isBlank()) {
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    starterSuggestions.forEach { chip ->
+                        Text(
+                            chip.label,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = colors.textSecondary,
+                            modifier = Modifier
+                                .clip(CircleShape)
+                                .background(colors.bgElevated)
+                                .border(0.6.dp, colors.stroke, CircleShape)
+                                .clickable { draft = chip.prompt }
+                                .padding(horizontal = 13.dp, vertical = 7.5.dp),
+                        )
+                    }
+                }
+            }
+
+            // 1:1 reuse of iOS PromptBar (`ConversationsView.swift` landingPromptBar)
+            val resolvedWsId = currentWorkspace?.id?.ifBlank { null }
+                ?: state.conversations.firstOrNull { it.workspaceId.isNotBlank() }?.workspaceId
+            val landingModes = remember {
+                listOf(
+                    SessionMode("manual", "手动审批"),
+                    SessionMode("accept_edits", "自动接受编辑"),
+                    SessionMode("plan", "仅规划"),
+                    SessionMode("auto", "自动"),
+                    SessionMode("bypass", "跳过权限"),
+                )
+            }
+            val landingConfigOptions = remember(agents.size, currentAgent?.id, landingEffortValue) {
+                buildList<SessionConfigOption> {
+                    if (agents.isNotEmpty()) {
+                        add(
+                            SessionConfigOption(
+                                key = "model",
+                                label = "模型",
+                                category = "model",
+                                value = currentAgent?.id ?: "claude_code",
+                                choices = agents.map { a ->
+                                    SessionConfigChoice(
+                                        value = a.id,
+                                        label = agentDisplayName(a.id, a.displayName),
+                                    )
+                                },
+                            ),
+                        )
+                    }
+                    add(
+                        SessionConfigOption(
+                            key = "reasoning_effort",
+                            label = "推理强度",
+                            category = "thought_level",
+                            value = landingEffortValue,
+                            choices = listOf(
+                                SessionConfigChoice("low", "低"),
+                                SessionConfigChoice("medium", "中"),
+                                SessionConfigChoice("high", "高"),
+                            ),
+                        ),
+                    )
+                }
+            }
+
+            PromptBar(
+                text = draft,
+                onTextChange = { draft = it },
+                menu = composerMenu,
+                onMenuChange = { composerMenu = it },
+                agentId = currentAgent?.id ?: "claude_code",
+                agent = currentAgent,
+                modes = landingModes,
+                currentModeId = landingModeId,
+                configOptions = landingConfigOptions,
+                isStreaming = false,
+                enabled = state.connection.allowsWrites && !resolvedWsId.isNullOrBlank(),
+                onSend = {
+                    val text = draft.trim()
+                    val wsId = resolvedWsId ?: return@PromptBar
+                    if (text.isEmpty()) return@PromptBar
+                    val agId = currentAgent?.id ?: "claude_code"
+                    composerMenu = null
+                    draft = ""
+                    model.createConversation(
+                        workspaceId = wsId,
+                        agentId = agId,
+                        title = text.take(36),
+                        prompt = text,
+                    )
+                },
+                onStop = {},
+                onSelectMode = { modeId ->
+                    landingModeId = modeId
+                },
+                onSelectOption = { key, value ->
+                    when (key) {
+                        "model" -> selectedAgentId = value
+                        "reasoning_effort" -> landingEffortValue = value
+                    }
+                },
+                onOpenFileBrowser = if (currentWorkspace != null) {
+                    { showFileBrowserSheet = true }
+                } else {
+                    null
+                },
+            )
+        }
+
+        // Slide-Out Sidebar Scrim
+        AnimatedVisibility(
+            visible = isSidebarOpen,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier.zIndex(1f),
+        ) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(0.36f))
+                    .clickable { isSidebarOpen = false },
+            )
+        }
+
+        // Slide-Out Sidebar Drawer (1:1 with iOS ConversationsView.sidebarDrawer)
+        AnimatedVisibility(
+            visible = isSidebarOpen,
+            enter = slideInHorizontally { -it },
+            exit = slideOutHorizontally { -it },
+            modifier = Modifier.zIndex(2f),
+        ) {
+            Column(
+                Modifier
+                    .width(304.dp)
+                    .fillMaxHeight()
+                    .background(colors.bgElevated)
+                    .clickable(enabled = false) {},
+            ) {
+                // Sidebar Top Bar: Segmented Switcher (最近对话 | 项目文件) + New Chat Button
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(colors.segmentedTrack)
+                            .padding(3.dp),
+                        horizontalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        listOf("conversations" to "最近对话", "files" to "项目文件").forEach { (id, label) ->
+                            val selected = sidebarTab == id
+                            Text(
+                                label,
+                                fontSize = 13.sp,
+                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                                color = if (selected) colors.textPrimary else colors.textSecondary,
+                                modifier = Modifier
+                                    .then(
+                                        if (selected) Modifier.shadow(1.5.dp, CircleShape, ambientColor = Color.Black.copy(0.08f))
+                                        else Modifier,
+                                    )
+                                    .clip(CircleShape)
+                                    .background(if (selected) colors.segmentedThumb else Color.Transparent)
+                                    .clickable { sidebarTab = id }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                            )
+                        }
+                    }
+
+                    Spacer(Modifier.weight(1f))
+
+                    Box(
+                        Modifier
+                            .size(32.dp)
+                            .clip(CircleShape)
+                            .background(colors.bg)
+                            .clickable { isSidebarOpen = false },
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        Icon(Icons.Rounded.EditNote, contentDescription = "新对话", tint = colors.textPrimary, modifier = Modifier.size(18.dp))
+                    }
+                }
+
+                // Sidebar Search Box
+                Row(
+                    Modifier
+                        .padding(horizontal = 14.dp)
+                        .padding(bottom = 10.dp)
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(colors.bg)
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Icon(Icons.Rounded.Search, null, tint = colors.textSecondary, modifier = Modifier.size(15.dp))
+                    Box(Modifier.weight(1f)) {
+                        if (sidebarSearch.isEmpty()) {
+                            Text(
+                                if (sidebarTab == "conversations") "搜索对话…" else "搜索项目…",
+                                fontSize = 13.5.sp,
+                                color = colors.textTertiary,
+                            )
+                        }
+                        BasicTextField(
+                            value = sidebarSearch,
+                            onValueChange = { sidebarSearch = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = colors.textPrimary, fontSize = 13.5.sp),
+                            cursorBrush = SolidColor(colors.accent),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (sidebarSearch.isNotEmpty()) {
+                        Icon(
+                            Icons.Rounded.Cancel,
+                            null,
+                            tint = colors.textTertiary,
+                            modifier = Modifier.size(15.dp).clickable { sidebarSearch = "" },
+                        )
+                    }
+                }
+
+                HorizontalDivider(color = colors.hairline)
+
+                // Sidebar Body
+                if (sidebarTab == "conversations") {
+                    val q = sidebarSearch.trim().lowercase()
+                    val filtered = remember(state.conversations, q) {
+                        state.conversations.filter {
+                            q.isEmpty() || it.title.lowercase().contains(q) || it.agentId.lowercase().contains(q)
+                        }
+                    }
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(vertical = 10.dp),
+                    ) {
+                        if (currentProject != null) {
+                            item {
+                                Text(
+                                    currentProject.name,
+                                    fontSize = 11.5.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.textSecondary,
+                                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
                                 )
                             }
                         }
-                        item { Spacer(Modifier.size(88.dp)) }
+                        if (filtered.isEmpty()) {
+                            item {
+                                Text(
+                                    "暂无对话记录",
+                                    fontSize = 13.sp,
+                                    color = colors.textSecondary,
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth().padding(vertical = 32.dp),
+                                )
+                            }
+                        } else {
+                            items(filtered, key = { it.id }) { item ->
+                                val agent = catalogAgent(state, item.agentId)
+                                val relTime = remember(item.updatedAt) { relativeTime(item.updatedAt) }
+                                Row(
+                                    Modifier
+                                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(9.dp))
+                                        .then(
+                                            longPressModifier(
+                                                onClick = {
+                                                    isSidebarOpen = false
+                                                    model.openConversation(item.id)
+                                                },
+                                                onLongClick = { offset ->
+                                                    menuAnchor = offset
+                                                    menuId = item.id
+                                                },
+                                            ),
+                                        )
+                                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                ) {
+                                    AgentAvatar(item.agentId, size = 20.dp, iconSvg = agent?.iconSvg, displayName = agent?.displayName.orEmpty())
+                                    Text(
+                                        item.title.ifBlank { "未命名对话" },
+                                        fontSize = 13.5.sp,
+                                        color = colors.textPrimary,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                        modifier = Modifier.weight(1f),
+                                    )
+                                    Text(
+                                        relTime,
+                                        fontSize = 10.5.sp,
+                                        color = colors.textTertiary,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    val q = sidebarSearch.trim().lowercase()
+                    val filteredProjects = remember(projects, q) {
+                        projects.filter {
+                            q.isEmpty() || it.name.lowercase().contains(q) || it.path.lowercase().contains(q)
+                        }
+                    }
+                    LazyColumn(
+                        Modifier.weight(1f).fillMaxWidth(),
+                        contentPadding = PaddingValues(horizontal = 10.dp, vertical = 10.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        items(filteredProjects, key = { it.id }) { proj ->
+                            val ws = workspaces.firstOrNull { it.projectId == proj.id }
+                            val expanded = proj.id in expandedProjects
+                            Column {
+                                Row(
+                                    Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            if (expanded) {
+                                                expandedProjects = expandedProjects - proj.id
+                                            } else {
+                                                expandedProjects = expandedProjects + proj.id
+                                                if (ws != null && !workspaceEntries.containsKey(ws.id)) {
+                                                    model.loadWorkspaceEntries(ws.id) { entries ->
+                                                        workspaceEntries = workspaceEntries + (ws.id to entries)
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                ) {
+                                    Icon(
+                                        if (expanded) Icons.Rounded.ExpandLess else Icons.Rounded.ExpandMore,
+                                        null,
+                                        tint = colors.textTertiary,
+                                        modifier = Modifier.size(16.dp),
+                                    )
+                                    Icon(Icons.Rounded.Folder, null, tint = colors.accent, modifier = Modifier.size(16.dp))
+                                    Text(
+                                        proj.name,
+                                        fontSize = 13.5.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = colors.textPrimary,
+                                        modifier = Modifier.weight(1f),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                    if (ws != null) {
+                                        Text(
+                                            "差异",
+                                            fontSize = 11.sp,
+                                            color = colors.accent,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(colors.accent.copy(0.12f))
+                                                .clickable {
+                                                    model.selectProject(proj.id)
+                                                    isSidebarOpen = false
+                                                    showDiffSheet = true
+                                                }
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                }
+                                if (expanded && ws != null) {
+                                    val entries = workspaceEntries[ws.id].orEmpty()
+                                    Column(Modifier.padding(start = 28.dp)) {
+                                        entries.take(30).forEach { entry ->
+                                            Row(
+                                                Modifier.fillMaxWidth().padding(vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
+                                                Icon(
+                                                    if (entry.directory) Icons.Rounded.Folder else Icons.Rounded.Description,
+                                                    null,
+                                                    tint = colors.textSecondary,
+                                                    modifier = Modifier.size(14.dp),
+                                                )
+                                                Text(
+                                                    entry.name,
+                                                    fontSize = 12.5.sp,
+                                                    color = colors.textSecondary,
+                                                    maxLines = 1,
+                                                    overflow = TextOverflow.Ellipsis,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                HorizontalDivider(color = colors.hairline)
+
+                // Sidebar Bottom Quick Nav Strip
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 10.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp),
+                ) {
+                    SidebarQuickNav("新工作台", Icons.Rounded.AutoAwesome, Modifier.weight(1f)) {
+                        isSidebarOpen = false
+                    }
+                    SidebarQuickNav("看板", Icons.Rounded.GridView, Modifier.weight(1f)) {
+                        isSidebarOpen = false
+                        model.go(Route.Status)
+                    }
+                    SidebarQuickNav("协作空间", Icons.Rounded.Groups, Modifier.weight(1f)) {
+                        isSidebarOpen = false
+                        model.go(Route.Collaboration)
+                    }
+                    SidebarQuickNav("设置", Icons.Rounded.Settings, Modifier.weight(1f)) {
+                        isSidebarOpen = false
+                        model.go(Route.Settings())
                     }
                 }
             }
         }
-        if (state.selectedProjectId != null && state.connection.allowsWrites) {
-            FloatingActionButton(
-                onClick = { showCreate = true; model.loadCatalog() },
-                modifier = Modifier.align(Alignment.BottomEnd).padding(20.dp).zIndex(2f),
-                containerColor = colors.accent,
-                contentColor = colors.onAccent,
-                shape = CircleShape,
+
+        // Project Picker Bottom Sheet
+        if (showProjectSheet) {
+            ModalBottomSheet(
+                onDismissRequest = { showProjectSheet = false },
+                containerColor = colors.bgElevated,
             ) {
-                Icon(Icons.Rounded.Add, "新会话")
+                Column(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 8.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Text(
+                        "切换项目",
+                        fontSize = 17.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.textPrimary,
+                        modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
+                    )
+                    projects.forEach { proj ->
+                        val selected = proj.id == currentProject?.id
+                        Row(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .background(if (selected) colors.accent.copy(0.12f) else colors.bg)
+                                .clickable {
+                                    showProjectSheet = false
+                                    model.selectProject(proj.id)
+                                }
+                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(Icons.Rounded.Folder, null, tint = if (selected) colors.accent else colors.textSecondary, modifier = Modifier.size(18.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(proj.name, fontSize = 15.sp, fontWeight = FontWeight.Medium, color = colors.textPrimary)
+                                if (proj.path.isNotBlank()) {
+                                    Text(proj.path, fontSize = 11.sp, fontFamily = PlexMono, color = colors.textTertiary, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                }
+                            }
+                            if (selected) {
+                                Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(18.dp))
+                            }
+                        }
+                    }
+                    Spacer(Modifier.height(16.dp))
+                }
             }
         }
-        if (showCreate) NewConversationSheet(state, model) { showCreate = false }
+
+        if (showDiffSheet && currentWorkspace != null) {
+            DiffListSheet(
+                workspaceId = currentWorkspace.id,
+                conversationId = state.conversations.firstOrNull()?.id.orEmpty(),
+                model = model,
+                onDismiss = { showDiffSheet = false },
+            )
+        }
+
+        if (showFileBrowserSheet && currentWorkspace != null) {
+            FileBrowserSheet(
+                workspaceId = currentWorkspace.id,
+                title = currentProject?.name ?: currentWorkspace.name.ifBlank { "文件" },
+                model = model,
+                onDismiss = { showFileBrowserSheet = false },
+            )
+        }
+
         val menuItem = state.conversations.find { it.id == menuId }
         if (menuItem != null && state.connection.allowsWrites) {
             ActionMenu(
@@ -170,131 +862,19 @@ fun ConversationList(state: UiState, model: CompanionModel) {
 }
 
 @Composable
-private fun ConversationHeader(state: UiState, model: CompanionModel) {
+private fun SidebarQuickNav(title: String, icon: ImageVector, modifier: Modifier = Modifier, onClick: () -> Unit) {
     val colors = VibexTheme.colors
-    val project = state.catalog?.projects?.find { it.id == state.selectedProjectId }
-    var projectOpen by remember { mutableStateOf(false) }
-    var daysOpen by remember { mutableStateOf(false) }
-    Box(Modifier.fillMaxWidth()) {
-        Box(Modifier.align(Alignment.Center).padding(horizontal = 108.dp)) {
-            Row(
-                Modifier.clip(ShapeRow).clickable { projectOpen = true }.padding(vertical = 4.dp, horizontal = 2.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Text(
-                    project?.name ?: "会话",
-                    style = MaterialTheme.typography.headlineLarge,
-                    color = colors.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    textAlign = androidx.compose.ui.text.style.TextAlign.Center,
-                )
-                Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary)
-            }
-            GlassMenu(projectOpen, { projectOpen = false }) {
-                state.catalog?.projects.orEmpty().forEach { item ->
-                    GlassMenuItem(item.name.ifBlank { item.id }, selected = item.id == state.selectedProjectId) {
-                        projectOpen = false
-                        model.selectProject(item.id)
-                    }
-                }
-                GlassMenuItem("管理文件夹") {
-                    projectOpen = false
-                    model.go(Route.Folders)
-                }
-            }
-        }
-        Box(Modifier.align(Alignment.CenterEnd)) {
-            Row(
-                Modifier
-                    .clip(ShapeRow)
-                    .background(colors.bgElevated.copy(if (colors.isDark) 0.55f else 0.88f))
-                    .clickable { daysOpen = true }
-                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(2.dp),
-            ) {
-                Text("近 ${state.sinceDays} 天", style = MaterialTheme.typography.titleMedium, color = colors.textPrimary)
-                Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(18.dp))
-            }
-            GlassMenu(daysOpen, { daysOpen = false }) {
-                listOf(3, 7, 30).forEach { days ->
-                    GlassMenuItem("近 $days 天", selected = state.sinceDays == days) {
-                        daysOpen = false
-                        model.setSinceDays(days)
-                    }
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalFoundationApi::class)
-@Composable
-fun SessionRow(
-    item: ConversationSummary,
-    agent: dev.vibex.companion.CatalogAgent? = null,
-    onClick: () -> Unit,
-    onLongClick: (Offset) -> Unit = {},
-) {
-    val colors = VibexTheme.colors
-    Row(
-        Modifier
-            .padding(horizontal = 8.dp, vertical = 4.dp)
-            .fillMaxWidth()
-            .shadow(4.dp, ShapeRow, ambientColor = colors.textPrimary.copy(0.07f), spotColor = colors.textPrimary.copy(0.10f))
-            .clip(ShapeRow)
-            .background(colors.card)
-            .then(longPressModifier(onClick, onLongClick))
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    Column(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.bg)
+            .clickable(onClick = onClick)
+            .padding(vertical = 6.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(4.dp),
     ) {
-        Box {
-            AgentAvatar(item.agentId, iconSvg = agent?.iconSvg, displayName = agent?.displayName.orEmpty())
-            Box(
-                Modifier.align(Alignment.BottomEnd).offset(2.dp, 2.dp).size(8.dp).clip(CircleShape)
-                    .background(statusColor(item.status, colors))
-                    .border(1.5.dp, colors.card, CircleShape),
-            )
-        }
-        Column(Modifier.weight(1f)) {
-            Text(item.title.ifBlank { "会话" }, style = MaterialTheme.typography.titleMedium, color = colors.textPrimary, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            Text(
-                listOfNotNull(
-                    if (item.pinned) "置顶" else null,
-                    agentDisplayName(item.agentId, agent?.displayName.orEmpty()).ifBlank { null },
-                    statusLabel(item.status),
-                ).joinToString(" · "),
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.textSecondary,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Text(relativeTime(item.updatedAt), style = MaterialTheme.typography.bodyMedium, color = colors.textTertiary)
-    }
-}
-
-private data class DaySection(val title: String, val items: List<ConversationSummary>)
-
-private fun groupByDay(items: List<ConversationSummary>): List<DaySection> {
-    val grouped = linkedMapOf<String, MutableList<ConversationSummary>>()
-    items.forEach { item ->
-        grouped.getOrPut(dayBucket(item.updatedAt)) { mutableListOf() }.add(item)
-    }
-    return grouped.map { DaySection(it.key, it.value) }
-}
-
-private fun dayBucket(raw: String): String {
-    val parsed = parseInstant(raw) ?: return "更早"
-    val days = Duration.between(parsed, Instant.now()).toDays().coerceAtLeast(0)
-    return when {
-        days < 1 -> "今天"
-        days < 2 -> "昨天"
-        days < 7 -> "本周"
-        else -> "更早"
+        Icon(icon, null, tint = colors.textSecondary, modifier = Modifier.size(16.dp))
+        Text(title, fontSize = 10.5.sp, fontWeight = FontWeight.Medium, color = colors.textSecondary, maxLines = 1)
     }
 }
 
@@ -313,94 +893,4 @@ private fun parseInstant(raw: String): Instant? {
     if (raw.isBlank()) return null
     return runCatching { Instant.parse(raw) }.getOrNull()
         ?: runCatching { OffsetDateTime.parse(raw).toInstant() }.getOrNull()
-}
-
-
-@Composable
-fun NewConversation(state: UiState, model: CompanionModel) {
-    val colors = VibexTheme.colors
-    val catalog = state.catalog
-    val projectId = state.selectedProjectId
-    val projectWorkspaces = catalog?.workspaces.orEmpty().filter { it.projectId == projectId }
-    val agents = catalog?.agents.orEmpty().filter { it.ready }
-    var modeNew by remember { mutableStateOf(false) }
-    var workspace by remember { mutableStateOf(projectWorkspaces.firstOrNull()?.id.orEmpty()) }
-    var agent by remember { mutableStateOf(agents.firstOrNull()?.id.orEmpty()) }
-    var title by remember { mutableStateOf("") }
-    var prompt by remember { mutableStateOf("") }
-    var newName by remember { mutableStateOf("") }
-    var newBranch by remember { mutableStateOf(projectWorkspaces.firstOrNull()?.branch.orEmpty()) }
-    Column(Modifier.fillMaxSize()) {
-        Box(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 8.dp)) {
-            IconButton(onClick = { model.go(Route.Conversations) }, modifier = Modifier.align(Alignment.CenterStart)) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "返回") }
-            Text("新会话", style = MaterialTheme.typography.headlineLarge, color = colors.textPrimary, textAlign = androidx.compose.ui.text.style.TextAlign.Center, modifier = Modifier.align(Alignment.Center).fillMaxWidth().padding(horizontal = 48.dp))
-        }
-        Column(Modifier.padding(horizontal = 16.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            if (catalog == null) {
-                Text("正在读取目录", color = colors.textSecondary)
-                return
-            }
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                FilterChip(selected = !modeNew, onClick = { modeNew = false }, label = { Text("已有工作区") })
-                FilterChip(selected = modeNew, onClick = { modeNew = true }, label = { Text("新建工作区") })
-            }
-            androidx.compose.material3.OutlinedTextField(
-                title, { title = it }, label = { Text("会话名称") },
-                modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-            )
-            if (modeNew) {
-                androidx.compose.material3.OutlinedTextField(
-                    newName, { newName = it }, label = { Text("工作区名称") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-                )
-                androidx.compose.material3.OutlinedTextField(
-                    newBranch, { newBranch = it }, label = { Text("分支") },
-                    modifier = Modifier.fillMaxWidth(), singleLine = true, shape = ShapeControl,
-                )
-            } else {
-                Text("工作区", style = MaterialTheme.typography.titleMedium, color = colors.textSecondary)
-                if (projectWorkspaces.isEmpty()) {
-                    Text("这个项目还没有工作区", color = colors.textTertiary)
-                }
-                projectWorkspaces.forEach { item ->
-                    GlassRow(selected = item.id == workspace, onClick = { workspace = item.id }) {
-                        Text(item.name.ifBlank { item.id }, color = colors.textPrimary)
-                        if (item.branch.isNotBlank()) Text(item.branch, color = colors.textTertiary, style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
-            Text("Agent", style = MaterialTheme.typography.titleMedium, color = colors.textSecondary)
-            if (agents.isEmpty()) Text("Host 上还没有已启用的 Agent", color = colors.textTertiary)
-            agents.forEach { item ->
-                GlassRow(selected = item.id == agent, onClick = { agent = item.id }) {
-                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        AgentAvatar(item.id, iconSvg = item.iconSvg, displayName = item.displayName)
-                        Column {
-                            Text(agentDisplayName(item.id, item.displayName), color = colors.textPrimary)
-                            Text(if (item.ready) "就绪" else "未就绪", color = colors.textTertiary, style = MaterialTheme.typography.bodyMedium)
-                        }
-                    }
-                }
-            }
-            androidx.compose.material3.OutlinedTextField(
-                prompt, { prompt = it }, label = { Text("第一句话") },
-                modifier = Modifier.fillMaxWidth(), minLines = 4, shape = ShapeControl,
-            )
-            PrimaryButton(
-                "创建",
-                {
-                    if (modeNew) {
-                        val pid = projectId ?: return@PrimaryButton
-                        model.createWorkspace(pid, newName.ifBlank { "workspace" }, newBranch.ifBlank { null }) { id ->
-                            model.createConversation(id, agent, title, prompt)
-                        }
-                    } else {
-                        model.createConversation(workspace, agent, title, prompt)
-                    }
-                },
-                enabled = state.connection.allowsWrites && agent.isNotBlank() && (modeNew || workspace.isNotBlank()) && (!modeNew || newName.isNotBlank() || true),
-            )
-            Spacer(Modifier.size(24.dp))
-        }
-    }
 }

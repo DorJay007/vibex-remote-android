@@ -2,6 +2,8 @@ package dev.vibex.companion.app.ui.theme
 
 import android.app.Activity
 import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.LocalMinimumInteractiveComponentSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.darkColorScheme
 import androidx.compose.material3.lightColorScheme
@@ -11,10 +13,12 @@ import androidx.compose.runtime.ReadOnlyComposable
 import androidx.compose.runtime.SideEffect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.unit.Dp
 import androidx.core.view.WindowCompat
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun CompanionTheme(appearance: Appearance = Appearance.System, accent: AccentChoice = AccentChoice.Ink, content: @Composable () -> Unit) {
+fun CompanionTheme(appearance: Appearance = Appearance.System, accent: AccentChoice = AccentChoice.Blue, content: @Composable () -> Unit) {
     val dark = when (appearance) {
         Appearance.Dark -> true
         Appearance.Light -> false
@@ -56,7 +60,10 @@ fun CompanionTheme(appearance: Appearance = Appearance.System, accent: AccentCho
             }
         }
     }
-    CompositionLocalProvider(LocalCompanionColors provides colors) {
+    CompositionLocalProvider(
+        LocalCompanionColors provides colors,
+        LocalMinimumInteractiveComponentSize provides Dp.Unspecified,
+    ) {
         MaterialTheme(colorScheme = scheme, typography = CompanionTypography, content = content)
     }
 }

@@ -168,14 +168,14 @@ fun bundledAgentAsset(agentId: String, dark: Boolean): String? {
 fun normalizeAgentKey(agentId: String): String {
     val n = agentId.lowercase().replace('-', '_').replace(' ', '_')
     return when {
-        n.contains("claude") -> "claude_code"
-        n.contains("codex") -> "codex"
-        n.contains("gemini") -> "gemini"
+        n.contains("claude") || n.contains("sonnet") || n.contains("opus") || n.contains("haiku") -> "claude_code"
+        n.contains("codex") || n.contains("gpt") || n.startsWith("o1") || n.startsWith("o3") || n.startsWith("o4") -> "codex"
+        n.contains("gemini") || n.contains("antigravity") -> "gemini"
         n.contains("openclaw") -> "openclaw"
-        n.contains("opencode") || n == "open_code" -> "opencode"
+        n.contains("opencode") || n == "open_code" || n.contains("qoder") -> "opencode"
         n.contains("cline") -> "cline"
         n.contains("codebuddy") || n.contains("code_buddy") -> "codebuddy"
-        n.contains("kimi") -> "kimi"
+        n.contains("kimi") || n.contains("moonshot") -> "kimi"
         n == "pi" || n.startsWith("pi_") -> "pi"
         n.contains("grok") -> "grok"
         n.contains("cursor") -> "cursor"

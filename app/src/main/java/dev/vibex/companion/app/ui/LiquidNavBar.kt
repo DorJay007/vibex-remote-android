@@ -1,8 +1,12 @@
 package dev.vibex.companion.app.ui
 
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.interaction.collectIsPressedAsState
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,13 +22,19 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.Icon
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalFocusManager
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
@@ -45,56 +55,77 @@ data class LiquidTab(
 @Composable
 fun LiquidNavBar(tabs: List<LiquidTab>, modifier: Modifier = Modifier) {
     val colors = VibexTheme.colors
-    val shape = RoundedCornerShape(34.dp)
-    val fill = if (colors.isDark) Color(0xCC1A2029) else Color(0xD6FFFFFF)
-    val highlight = if (colors.isDark) Color.White.copy(0.20f) else Color.White.copy(0.86f)
-    Row(
+    val haptic = LocalHapticFeedback.current
+    val focusManager = LocalFocusManager.current
+    Column(
         modifier
-            .navigationBarsPadding()
-            .padding(horizontal = 18.dp, vertical = 10.dp)
             .fillMaxWidth()
-            .height(68.dp)
-            .shadow(20.dp, shape, ambientColor = Color.Black.copy(0.16f), spotColor = Color.Black.copy(0.10f))
-            .clip(shape)
-            .background(
-                Brush.verticalGradient(
-                    listOf(
-                        if (colors.isDark) Color.White.copy(0.14f) else Color.White.copy(0.92f),
-                        fill,
-                    ),
-                ),
-            )
-            .border(0.75.dp, highlight, shape)
-            .padding(6.dp),
-        verticalAlignment = Alignment.CenterVertically,
+            .background(colors.bgElevated)
+            .navigationBarsPadding(),
     ) {
-        tabs.forEach { tab ->
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxHeight()
-                    .clip(CircleShape)
-                    .background(if (tab.selected) colors.accent.copy(if (colors.isDark) 0.22f else 0.14f) else Color.Transparent)
-                    .semantics {
-                        contentDescription = tab.label
-                        role = Role.Tab
-                        selected = tab.selected
-                    }
-                    .clickable(onClick = tab.onClick),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
-            ) {
-                Icon(
-                    if (tab.selected) tab.selectedIcon else tab.icon,
-                    contentDescription = null,
-                    tint = if (tab.selected) colors.accent else colors.textTertiary,
-                    modifier = Modifier.size(22.dp),
+        Box(
+            Modifier
+                .fillMaxWidth()
+                .height(0.5.dp)
+                .background(colors.hairline),
+        )
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(54.dp)
+                .padding(horizontal = 8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            tabs.forEach { tab ->
+                val tint = if (tab.selected) colors.accent else colors.textSecondary
+                val interactionSource = remember { MutableInteractionSource() }
+                val pressed by interactionSource.collectIsPressedAsState()
+                val scale by animateFloatAsState(
+                    targetValue = if (pressed) 0.92f else 1f,
+                    animationSpec = spring(stiffness = 600f),
+                    label = "tabScale",
                 )
-                Text(
-                    tab.label,
-                    color = if (tab.selected) colors.accent else colors.textTertiary,
-                    fontSize = 11.sp,
-                )
+                Column(
+                    Modifier
+                        .weight(1f)
+                        .fillMaxHeight()
+                        .graphicsLayer {
+                            scaleX = scale
+                            scaleY = scale
+                        }
+                        .semantics {
+                            contentDescription = tab.label
+                            role = Role.Tab
+                            selected = tab.selected
+                        }
+                        .clickable(
+                            interactionSource = interactionSource,
+                            indication = null,
+                            onClick = {
+                                if (!tab.selected) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.TextHandleMove)
+                                }
+                                focusManager.clearFocus()
+                                tab.onClick()
+                            },
+                        )
+                        .padding(top = 6.dp, bottom = 4.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.spacedBy(3.dp, Alignment.CenterVertically),
+                ) {
+                    Icon(
+                        if (tab.selected) tab.selectedIcon else tab.icon,
+                        contentDescription = null,
+                        tint = tint,
+                        modifier = Modifier.size(21.dp),
+                    )
+                    Text(
+                        tab.label,
+                        color = tint,
+                        fontSize = 10.5.sp,
+                        fontWeight = if (tab.selected) androidx.compose.ui.text.font.FontWeight.SemiBold else androidx.compose.ui.text.font.FontWeight.Medium,
+                    )
+                }
             }
         }
     }

@@ -4,12 +4,12 @@ import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 
-val Hold = Color(0xFFD48A2A)
-val Stop = Color(0xFFC43C3C)
-val Pass = Color(0xFF2F8A63)
-val Quiet = Color(0xFF6B7380)
-val Ink = Color(0xFF12161C)
-val Paper = Color(0xFFE6E7E9)
+val Hold = Color(0xFFFF9500)
+val Stop = Color(0xFFFF3B30)
+val Pass = Color(0xFF34C759)
+val Quiet = Color(0xFF8E8E93)
+val Ink = Color(0xFF000000)
+val Paper = Color(0xFFF2F2F7)
 
 @Immutable
 data class CompanionColors(
@@ -18,6 +18,8 @@ data class CompanionColors(
     val bgElevated: Color,
     val sheet: Color,
     val card: Color,
+    val segmentedTrack: Color,
+    val segmentedThumb: Color,
     val stroke: Color,
     val hairline: Color,
     val codeSurface: Color,
@@ -33,38 +35,42 @@ data class CompanionColors(
     val pass: Color,
 )
 
-fun companionColors(dark: Boolean, accent: AccentChoice = AccentChoice.Ink) = if (dark) CompanionColors(
+fun companionColors(dark: Boolean, accent: AccentChoice = AccentChoice.Blue) = if (dark) CompanionColors(
     isDark = true,
-    bg = Color(0xFF121417),
-    bgElevated = Color(0xFF1A2029),
-    sheet = Color(0xFF2A3038),
-    card = Color(0xFF343B45),
-    stroke = Color.White.copy(0.10f),
-    hairline = Color.White.copy(0.06f),
-    codeSurface = Color.Black.copy(0.30f),
+    bg = Color(0xFF000000),
+    bgElevated = Color(0xFF1C1C1E),
+    sheet = Color(0xFF111113),
+    card = Color(0xFF1C1C1E),
+    segmentedTrack = Color(0xFF2C2C2E),
+    segmentedThumb = Color(0xFF3A3A3C),
+    stroke = Color.White.copy(0.08f),
+    hairline = Color.White.copy(0.10f),
+    codeSurface = Color(0xFF2C2C2E),
     rail = Color.White.copy(0.16f),
-    textPrimary = Color(0xFFF4F6F8),
-    textSecondary = Color(0xFFA8B0BB),
-    textTertiary = Color(0xFF6E7784),
+    textPrimary = Color(0xFFFFFFFF),
+    textSecondary = Color(0xFF8E8E93),
+    textTertiary = Color(0xFF636366),
     accent = accent.color(true),
     onAccent = accent.onColor(true),
     accentDim = accent.color(true).copy(0.18f),
-    danger = Color(0xFFF07575),
-    hold = Color(0xFFE0A04A),
-    pass = Color(0xFF4CAF82),
+    danger = Color(0xFFFF453A),
+    hold = Color(0xFFFF9F0A),
+    pass = Color(0xFF30D158),
 ) else CompanionColors(
     isDark = false,
     bg = Paper,
     bgElevated = Color.White,
-    sheet = Color(0xFFE6E7E9),
-    card = Color(0xFFF3F4F5),
-    stroke = Color.Black.copy(0.08f),
-    hairline = Color.Black.copy(0.06f),
-    codeSurface = Color.Black.copy(0.045f),
-    rail = Color.Black.copy(0.20f),
-    textPrimary = Color(0xFF1A1F27),
-    textSecondary = Color(0xFF5C6570),
-    textTertiary = Color(0xFF8A929C),
+    sheet = Color(0xFFF2F2F7),
+    card = Color.White,
+    segmentedTrack = Color(0xFFE5E5EA),
+    segmentedThumb = Color.White,
+    stroke = Color.Black.copy(0.05f),
+    hairline = Color.Black.copy(0.08f),
+    codeSurface = Color(0xFFE5E5EA),
+    rail = Color.Black.copy(0.18f),
+    textPrimary = Color(0xFF000000),
+    textSecondary = Color(0xFF6C6C70),
+    textTertiary = Color(0xFF8E8E93),
     accent = accent.color(false),
     onAccent = accent.onColor(false),
     accentDim = accent.color(false).copy(0.14f),

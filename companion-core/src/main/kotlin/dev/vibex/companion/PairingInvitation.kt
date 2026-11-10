@@ -15,7 +15,7 @@ data class PairingInvitation(
     val pairingToken: String,
     val reachability: List<ReachabilityTarget>,
 ) {
-    fun origins(): List<HostOrigin> = reachability.map { it.origin }.ifEmpty {
+    fun origins(): List<HostOrigin> = OriginOrder.probeOrder(reachability, null).ifEmpty {
         error("Invitation has no reachable origin")
     }
 }

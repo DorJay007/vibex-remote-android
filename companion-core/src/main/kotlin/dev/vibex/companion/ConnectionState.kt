@@ -4,6 +4,7 @@ enum class ConnectionState {
     Connecting,
     Online,
     Recovering,
+    HostSleeping,
     Offline,
     AuthRequired,
     Incompatible,

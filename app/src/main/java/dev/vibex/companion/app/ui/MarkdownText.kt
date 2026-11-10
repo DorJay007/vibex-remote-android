@@ -171,7 +171,7 @@ private fun MarkdownTable(table: MarkdownBlock.Table, modifier: Modifier = Modif
             table.rows.forEachIndexed { idx, cells ->
                 TableRow(cells, isHeader = false)
                 if (idx < table.rows.lastIndex) {
-                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.hairline.copy(alpha = 0.5f)))
+                    Box(Modifier.fillMaxWidth().height(0.5.dp).background(colors.stroke))
                 }
             }
         }
@@ -202,54 +202,11 @@ fun CodeBlock(
     language: String? = null,
     collapseAfter: Int = 20,
 ) {
-    val colors = VibexTheme.colors
-    val lines = remember(code) { code.split("\n") }
-    val collapsible = lines.size > collapseAfter
-    var expanded by remember(code) { mutableStateOf(false) }
-    val shown = if (collapsible && !expanded) lines.take(collapseAfter).joinToString("\n") else code
-    Column(
-        modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(10.dp))
-            .background(colors.codeSurface)
-            .border(0.5.dp, colors.hairline, RoundedCornerShape(10.dp)),
-    ) {
-        Row(
-            Modifier.fillMaxWidth().padding(start = 10.dp, end = 6.dp, top = 4.dp, bottom = 4.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween,
-        ) {
-            Text(
-                text = language?.ifBlank { null } ?: "code",
-                fontFamily = PlexMono,
-                fontSize = 11.sp,
-                color = colors.textTertiary,
-            )
-            CopyIconButton(code)
-        }
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 10.dp, vertical = 8.dp),
-        ) {
-            Text(
-                text = shown,
-                fontFamily = PlexMono,
-                fontSize = 12.5.sp,
-                lineHeight = 18.sp,
-                color = colors.textPrimary,
-            )
-        }
-        if (collapsible) {
-            Text(
-                text = if (expanded) "收起" else "展开其余 ${lines.size - collapseAfter} 行",
-                fontSize = 12.sp,
-                color = colors.accent,
-                modifier = Modifier.fillMaxWidth().clickable { expanded = !expanded }.padding(horizontal = 10.dp, vertical = 6.dp),
-            )
-        }
-    }
+    CodeBlockView(
+        code = code,
+        language = language.orEmpty(),
+        modifier = modifier,
+    )
 }
 
 @Composable
@@ -279,14 +236,11 @@ fun InlineMarkdownText(
     color: Color = VibexTheme.colors.textPrimary,
 ) {
     val colors = VibexTheme.colors
-    val density = LocalDensity.current
-    val measurer = rememberTextMeasurer()
-    val parsed = remember(raw, colors.accent, colors.codeSurface, colors.textPrimary, fontSize, density) {
-        inlineMarkdownWithCode(raw, colors.accent, colors.codeSurface, colors.textPrimary, fontSize, measurer, density)
+    val parsed = remember(raw, colors.accent, colors.codeSurface, colors.textPrimary) {
+        inlineMarkdown(raw, colors.accent, colors.codeSurface, colors.textPrimary)
     }
     Text(
-        text = parsed.first,
-        inlineContent = parsed.second,
+        text = parsed,
         fontSize = fontSize,
         lineHeight = lineHeight,
         fontWeight = fontWeight,
@@ -446,60 +400,12 @@ private fun tableCells(line: String): List<String> {
 private fun inlineMarkdown(raw: String, linkColor: Color, codeBg: Color, codeColor: Color): AnnotatedString =
     buildAnnotatedString { parseInline(this, raw, linkColor, codeBg, codeColor) }
 
-private fun inlineMarkdownWithCode(
-    raw: String,
-    linkColor: Color,
-    codeBg: Color,
-    codeColor: Color,
-    fontSize: TextUnit,
-    measurer: androidx.compose.ui.text.TextMeasurer,
-    density: androidx.compose.ui.unit.Density,
-): Pair<AnnotatedString, Map<String, InlineTextContent>> {
-    val codes = mutableListOf<String>()
-    val annotated = buildAnnotatedString {
-        parseInline(this, raw, linkColor, codeBg, codeColor, codes)
-    }
-    val inline = codes.mapIndexed { index, code ->
-        val codeStyle = androidx.compose.ui.text.TextStyle(
-            fontFamily = FontFamily.Monospace,
-            fontSize = fontSize * 0.92f,
-            lineHeight = fontSize * 0.92f,
-            platformStyle = androidx.compose.ui.text.PlatformTextStyle(includeFontPadding = false),
-        )
-        val measure = measurer.measure(AnnotatedString(code), codeStyle)
-        val padX = with(density) { 8.dp.toPx() }
-        val padY = with(density) { 4.dp.toPx() }
-        val widthSp = with(density) { (measure.size.width + padX).toSp() }
-        val heightSp = with(density) { (measure.size.height + padY).toSp() }
-        "code$index" to InlineTextContent(
-            Placeholder(widthSp, heightSp, PlaceholderVerticalAlign.Center),
-        ) {
-            Box(
-                Modifier
-                    .fillMaxSize()
-                    .clip(RoundedCornerShape(5.dp))
-                    .background(codeBg),
-                contentAlignment = Alignment.Center,
-            ) {
-                Text(
-                    code,
-                    style = codeStyle,
-                    color = codeColor,
-                    maxLines = 1,
-                )
-            }
-        }
-    }.toMap()
-    return annotated to inline
-}
-
 private fun parseInline(
     builder: AnnotatedString.Builder,
     raw: String,
     linkColor: Color,
     codeBg: Color,
     codeColor: Color,
-    codes: MutableList<String>? = null,
 ) {
     var i = 0
     val n = raw.length
@@ -518,14 +424,8 @@ private fun parseInline(
                 if (end > i) {
                     flush()
                     val code = raw.substring(i + 1, end)
-                    if (codes != null) {
-                        val id = "code${codes.size}"
-                        codes += code
-                        builder.appendInlineContent(id, code)
-                    } else {
-                        builder.withStyle(SpanStyle(fontFamily = FontFamily.Monospace, background = codeBg, color = codeColor)) {
-                            append(code)
-                        }
+                    builder.withStyle(SpanStyle(fontFamily = PlexMono, background = codeBg, color = codeColor)) {
+                        append(" $code ")
                     }
                     i = end + 1
                 } else {
@@ -538,7 +438,7 @@ private fun parseInline(
                 if (end > i + 1) {
                     flush()
                     builder.withStyle(SpanStyle(fontWeight = FontWeight.SemiBold)) {
-                        parseInline(this, raw.substring(i + 2, end), linkColor, codeBg, codeColor, codes)
+                        parseInline(this, raw.substring(i + 2, end), linkColor, codeBg, codeColor)
                     }
                     i = end + 2
                 } else {
@@ -550,7 +450,7 @@ private fun parseInline(
                 if (end > i + 1) {
                     flush()
                     builder.withStyle(SpanStyle(textDecoration = TextDecoration.LineThrough)) {
-                        parseInline(this, raw.substring(i + 2, end), linkColor, codeBg, codeColor, codes)
+                        parseInline(this, raw.substring(i + 2, end), linkColor, codeBg, codeColor)
                     }
                     i = end + 2
                 } else {
@@ -562,7 +462,7 @@ private fun parseInline(
                 if (end > i) {
                     flush()
                     builder.withStyle(SpanStyle(fontStyle = FontStyle.Italic)) {
-                        parseInline(this, raw.substring(i + 1, end), linkColor, codeBg, codeColor, codes)
+                        parseInline(this, raw.substring(i + 1, end), linkColor, codeBg, codeColor)
                     }
                     i = end + 1
                 } else {
@@ -577,7 +477,7 @@ private fun parseInline(
                     flush()
                     val label = raw.substring(i + 1, close)
                     builder.withStyle(SpanStyle(color = linkColor, fontWeight = FontWeight.Medium)) {
-                        parseInline(this, label, linkColor, codeBg, codeColor, codes)
+                        parseInline(this, label, linkColor, codeBg, codeColor)
                     }
                     i = closeParen + 1
                 } else {
