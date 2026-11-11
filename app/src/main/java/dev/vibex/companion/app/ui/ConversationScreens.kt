@@ -124,18 +124,27 @@ fun ConversationList(
     val colors = VibexTheme.colors
     val focusManager = LocalFocusManager.current
     var isSidebarOpen by remember { mutableStateOf(false) }
-    LaunchedEffect(isSidebarOpen) {
-        onChromeHiddenChange(isSidebarOpen)
-        if (isSidebarOpen) focusManager.clearFocus()
-    }
-    BackHandler(enabled = isSidebarOpen) {
-        isSidebarOpen = false
-    }
     var sidebarTab by remember { mutableStateOf("conversations") }
     var sidebarSearch by remember { mutableStateOf("") }
     var draft by remember { mutableStateOf("") }
     var selectedAgentId by remember { mutableStateOf<String?>(null) }
     var composerMenu by remember { mutableStateOf<ComposerMenu?>(null) }
+    var isComposerFocused by remember { mutableStateOf(false) }
+    val shouldHideBottomChrome = isSidebarOpen || composerMenu != null || isComposerFocused
+    LaunchedEffect(shouldHideBottomChrome) {
+        onChromeHiddenChange(shouldHideBottomChrome)
+        if (isSidebarOpen) {
+            composerMenu = null
+            focusManager.clearFocus()
+        }
+    }
+    BackHandler(enabled = isSidebarOpen || composerMenu != null) {
+        if (isSidebarOpen) {
+            isSidebarOpen = false
+        } else {
+            composerMenu = null
+        }
+    }
     var landingModeId by remember { mutableStateOf("auto") }
     var landingEffortValue by remember { mutableStateOf("medium") }
     var showProjectSheet by remember { mutableStateOf(false) }
@@ -284,7 +293,10 @@ fun ConversationList(
                     .clickable(
                         interactionSource = remember { MutableInteractionSource() },
                         indication = null,
-                    ) { focusManager.clearFocus() }
+                    ) {
+                        if (composerMenu != null) composerMenu = null
+                        focusManager.clearFocus()
+                    }
                     .padding(horizontal = 24.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
                 verticalArrangement = Arrangement.spacedBy(14.dp),
@@ -338,13 +350,13 @@ fun ConversationList(
 
             Spacer(Modifier.weight(1f))
 
-            // Quiet Starter Suggestion Chips (shown when draft is empty)
-            if (draft.isBlank()) {
+            // Quiet Starter Suggestion Chips (shown when draft is empty and composer menu is closed)
+            if (draft.isBlank() && composerMenu == null) {
                 Row(
                     Modifier
                         .fillMaxWidth()
                         .horizontalScroll(rememberScrollState())
-                        .padding(horizontal = 14.dp, vertical = 8.dp),
+                        .padding(horizontal = 14.dp, vertical = 6.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     starterSuggestions.forEach { chip ->
@@ -417,6 +429,7 @@ fun ConversationList(
                 onMenuChange = { composerMenu = it },
                 agentId = currentAgent?.id ?: "claude_code",
                 agent = currentAgent,
+                agents = agents,
                 modes = landingModes,
                 currentModeId = landingModeId,
                 configOptions = landingConfigOptions,
@@ -451,6 +464,7 @@ fun ConversationList(
                 } else {
                     null
                 },
+                onFocusChange = { isComposerFocused = it },
             )
         }
 

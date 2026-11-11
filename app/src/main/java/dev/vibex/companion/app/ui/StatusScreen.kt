@@ -3,7 +3,8 @@ package dev.vibex.companion.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
+import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -19,41 +20,31 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.gestures.snapping.rememberSnapFlingBehavior
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
-import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.ArrowBackIos
 import androidx.compose.material.icons.automirrored.rounded.List
-import androidx.compose.material.icons.automirrored.rounded.OpenInNew
-import androidx.compose.material.icons.automirrored.rounded.Sort
-import androidx.compose.material.icons.rounded.AccountTree
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.AddCircle
 import androidx.compose.material.icons.rounded.Archive
-import androidx.compose.material.icons.rounded.AutoAwesome
 import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Bolt
-import androidx.compose.material.icons.rounded.CalendarToday
 import androidx.compose.material.icons.rounded.CallSplit
 import androidx.compose.material.icons.rounded.ChatBubble
 import androidx.compose.material.icons.rounded.Check
-import androidx.compose.material.icons.rounded.CheckCircle
-import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.CreditCard
-import androidx.compose.material.icons.rounded.DashboardCustomize
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.ExpandMore
-import androidx.compose.material.icons.rounded.FilterList
 import androidx.compose.material.icons.rounded.Folder
-import androidx.compose.material.icons.rounded.GridView
 import androidx.compose.material.icons.rounded.Groups
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.Inventory2
@@ -63,16 +54,12 @@ import androidx.compose.material.icons.rounded.MoreHoriz
 import androidx.compose.material.icons.rounded.Paid
 import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material.icons.rounded.PushPin
-import androidx.compose.material.icons.rounded.RadioButtonUnchecked
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material.icons.rounded.SwapHoriz
 import androidx.compose.material.icons.rounded.Tag
 import androidx.compose.material.icons.rounded.TrendingUp
 import androidx.compose.material.icons.rounded.Unarchive
 import androidx.compose.material.icons.rounded.ViewColumn
-import androidx.compose.material.icons.rounded.Visibility
-import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.material.icons.rounded.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -81,13 +68,14 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -100,7 +88,11 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -129,25 +121,7 @@ import java.util.Locale
 
 private enum class KanbanViewMode(val id: String, val title: String, val icon: ImageVector) {
     Columns("columns", "四栏看板", Icons.Rounded.ViewColumn),
-    SessionHub("sessionHub", "会话中心", Icons.AutoMirrored.Rounded.List),
     Usage("usage", "计量统计", Icons.Rounded.BarChart),
-}
-
-private enum class ColumnsLayoutStyle(val id: String, val title: String) {
-    HorizontalBoard("horizontalBoard", "四栏画板"),
-    StatusTabs("statusTabs", "分栏列表"),
-}
-
-private enum class SessionHubSubMode(val id: String, val title: String, val icon: ImageVector) {
-    List("list", "会话列表", Icons.AutoMirrored.Rounded.List),
-    Monitor("monitor", "会话监控区", Icons.Rounded.GridView),
-    Canvas("canvas", "画布分组", Icons.Rounded.DashboardCustomize),
-}
-
-private enum class CanvasGroupingMode(val id: String, val title: String) {
-    ByProject("byProject", "按项目"),
-    ByAgent("byAgent", "按 Agent"),
-    ByRecent("byRecent", "最近时间"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -163,29 +137,7 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
     var isLoading by remember { mutableStateOf(true) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var noticeMessage by remember { mutableStateOf<String?>(null) }
-
-    // Columns Board state
-    var columnsLayout by rememberSaveable { mutableStateOf(ColumnsLayoutStyle.HorizontalBoard.id) }
-    var focusedColumnRaw by rememberSaveable { mutableStateOf(KanbanSessionStatus.Todo.rawValue) }
-    val focusedColumn = KanbanSessionStatus.fromRaw(focusedColumnRaw)
-
-    // Session Hub state
-    var hubSubMode by rememberSaveable { mutableStateOf(SessionHubSubMode.List.id) }
-    var searchQuery by rememberSaveable { mutableStateOf("") }
-    var sortField by remember { mutableStateOf(KanbanSortField.DefaultOrder) }
-    var selectedWorkspaceIds by remember { mutableStateOf(setOf<String>()) }
-    var selectedAgentKeys by remember { mutableStateOf(setOf<String>()) }
-    var isArchiveView by rememberSaveable { mutableStateOf(false) }
-    var isBulkDeleteMode by rememberSaveable { mutableStateOf(false) }
-    var selectedDeleteIds by remember { mutableStateOf(setOf<String>()) }
-    var collapsedStatuses by remember { mutableStateOf(setOf<KanbanSessionStatus>()) }
-
-    // Monitor & Canvas state
-    var monitoredSessionIds by remember { mutableStateOf(setOf<String>()) }
-    val monitorPreviews = remember { mutableStateMapOf<String, String>() }
-    var showAddMonitorPicker by remember { mutableStateOf(false) }
-    var canvasGrouping by rememberSaveable { mutableStateOf(CanvasGroupingMode.ByProject.id) }
-    var collapsedCanvasGroups by remember { mutableStateOf(setOf<String>()) }
+    var usageRefreshTrigger by remember { mutableIntStateOf(0) }
 
     // Modals & Alerts
     var showProjectMenu by remember { mutableStateOf(false) }
@@ -194,7 +146,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
     var renamingSession by remember { mutableStateOf<KanbanSessionSummary?>(null) }
     var renameDraft by remember { mutableStateOf("") }
     var deletingSession by remember { mutableStateOf<KanbanSessionSummary?>(null) }
-    var showBulkDeleteConfirm by remember { mutableStateOf(false) }
 
     val projects = state.catalog?.projects.orEmpty()
     val workspaces = state.catalog?.workspaces.orEmpty()
@@ -227,13 +178,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
     }
 
     val activeSessions = remember(sessions) { sessions.filter { !it.isArchived } }
-    val archivedSessions = remember(sessions) { sessions.filter { it.isArchived } }
-
-    val effectiveMonitoredSessions = remember(activeSessions, monitoredSessionIds) {
-        val explicit = activeSessions.filter { it.id in monitoredSessionIds }
-        if (explicit.isNotEmpty()) explicit
-        else activeSessions.filter { it.isRunning || it.status == KanbanSessionStatus.InReview }.take(6)
-    }
 
     fun openSession(session: KanbanSessionSummary) {
         if (session.completesWhenViewed) {
@@ -293,8 +237,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
 
     fun performDelete(session: KanbanSessionSummary) {
         sessions = sessions.filterNot { it.id == session.id }
-        monitoredSessionIds = monitoredSessionIds - session.id
-        selectedDeleteIds = selectedDeleteIds - session.id
         scope.launch {
             runCatching {
                 model.mutateKanbanSessionDelete(session.id)
@@ -303,21 +245,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
                 noticeMessage = err.message ?: "删除失败"
                 reload()
             }
-        }
-    }
-
-    fun performBulkDelete() {
-        val ids = selectedDeleteIds.toList()
-        if (ids.isEmpty()) return
-        sessions = sessions.filterNot { it.id in selectedDeleteIds }
-        selectedDeleteIds = emptySet()
-        isBulkDeleteMode = false
-        scope.launch {
-            for (id in ids) {
-                runCatching { model.mutateKanbanSessionDelete(id) }
-            }
-            noticeMessage = "已删除 ${ids.size} 个会话。"
-            reload()
         }
     }
 
@@ -336,135 +263,149 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
         }
     }
 
-    fun toggleMonitor(session: KanbanSessionSummary) {
-        monitoredSessionIds = if (session.id in monitoredSessionIds) {
-            monitoredSessionIds - session.id
-        } else {
-            monitoredSessionIds + session.id
-        }
-    }
-
     Column(Modifier.fillMaxSize().background(colors.bg)) {
-        // 1. iOS Navigation Bar: Project Selector Menu | 看板 | + Button
+        // Row 1 (Single Navigation Bar):
+        // - Columns mode: Project Selector Menu | 看板 | 计量统计 Icon + 新建会话 Icon
+        // - Usage mode: ← 看板 | 计量统计 | ↻ 刷新
         Box(
             Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
-            Box(Modifier.align(Alignment.CenterStart)) {
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(colors.bgElevated)
-                        .clickable { showProjectMenu = true }
-                        .padding(horizontal = 10.dp, vertical = 5.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        imageVector = if (selectedProject == null) Icons.Rounded.Layers else Icons.Rounded.Folder,
-                        contentDescription = null,
-                        tint = colors.accent,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(
-                        selectedProject?.name ?: "全部项目",
-                        fontSize = 13.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.textPrimary,
-                        maxLines = 1,
-                    )
-                    Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
-                }
-                DropdownMenu(expanded = showProjectMenu, onDismissRequest = { showProjectMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("全部项目") },
-                        leadingIcon = { Icon(Icons.Rounded.Layers, null, modifier = Modifier.size(16.dp)) },
-                        trailingIcon = if (selectedProjectId == null) {
-                            { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                        } else null,
-                        onClick = {
-                            showProjectMenu = false
-                            selectedProjectId = null
-                            selectedWorkspaceIds = emptySet()
-                        },
-                    )
-                    HorizontalDivider()
-                    projects.forEach { proj ->
-                        val isSelected = selectedProjectId?.equals(proj.id, ignoreCase = true) == true
+            if (viewMode == KanbanViewMode.Columns.id) {
+                Box(Modifier.align(Alignment.CenterStart)) {
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(colors.bgElevated)
+                            .clickable { showProjectMenu = true }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = if (selectedProject == null) Icons.Rounded.Layers else Icons.Rounded.Folder,
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(14.dp),
+                        )
+                        Text(
+                            selectedProject?.name ?: "全部项目",
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.widthIn(max = 115.dp),
+                        )
+                        Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
+                    }
+                    DropdownMenu(expanded = showProjectMenu, onDismissRequest = { showProjectMenu = false }) {
                         DropdownMenuItem(
-                            text = { Text(proj.name) },
-                            leadingIcon = { Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(16.dp)) },
-                            trailingIcon = if (isSelected) {
+                            text = { Text("全部项目") },
+                            leadingIcon = { Icon(Icons.Rounded.Layers, null, modifier = Modifier.size(16.dp)) },
+                            trailingIcon = if (selectedProjectId == null) {
                                 { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
                             } else null,
                             onClick = {
                                 showProjectMenu = false
-                                selectedProjectId = proj.id
-                                selectedWorkspaceIds = emptySet()
-                                model.selectProjectInPlace(proj.id)
+                                selectedProjectId = null
                             },
                         )
+                        HorizontalDivider()
+                        projects.forEach { proj ->
+                            val isSelected = selectedProjectId?.equals(proj.id, ignoreCase = true) == true
+                            DropdownMenuItem(
+                                text = { Text(proj.name) },
+                                leadingIcon = { Icon(Icons.Rounded.Folder, null, modifier = Modifier.size(16.dp)) },
+                                trailingIcon = if (isSelected) {
+                                    { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                                } else null,
+                                onClick = {
+                                    showProjectMenu = false
+                                    selectedProjectId = proj.id
+                                    model.selectProjectInPlace(proj.id)
+                                },
+                            )
+                        }
                     }
                 }
-            }
 
-            Text(
-                "看板",
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.textPrimary,
-                modifier = Modifier.align(Alignment.Center),
-            )
+                Text(
+                    "看板",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                    modifier = Modifier.align(Alignment.Center),
+                )
 
-            Icon(
-                Icons.Rounded.AddCircle,
-                contentDescription = "新建会话",
-                tint = colors.accent,
-                modifier = Modifier
-                    .align(Alignment.CenterEnd)
-                    .size(24.dp)
-                    .clickable {
-                        createInitialStatus = KanbanSessionStatus.Todo
-                        model.loadCatalogSilent()
-                        showCreateSheet = true
-                    },
-            )
-        }
-
-        // 2. iOS Top Mode Bar: 四栏看板 | 会话中心 | 计量统计
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            KanbanViewMode.entries.forEach { mode ->
-                val isSelected = viewMode == mode.id
                 Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(10.dp))
-                        .background(if (isSelected) colors.accent else colors.bgElevated)
-                        .clickable { viewMode = mode.id }
-                        .padding(vertical = 8.dp),
-                    horizontalArrangement = Arrangement.Center,
+                    Modifier.align(Alignment.CenterEnd),
                     verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
                 ) {
                     Icon(
-                        mode.icon,
-                        contentDescription = null,
-                        tint = if (isSelected) Color.White else colors.textPrimary,
-                        modifier = Modifier.size(14.dp),
+                        Icons.Rounded.BarChart,
+                        contentDescription = "计量统计",
+                        tint = colors.accent,
+                        modifier = Modifier
+                            .size(21.dp)
+                            .clickable { viewMode = KanbanViewMode.Usage.id },
                     )
-                    Spacer(Modifier.width(5.dp))
-                    Text(
-                        mode.title,
-                        fontSize = 13.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (isSelected) Color.White else colors.textPrimary,
+                    Icon(
+                        Icons.Rounded.AddCircle,
+                        contentDescription = "新建会话",
+                        tint = colors.accent,
+                        modifier = Modifier
+                            .size(24.dp)
+                            .clickable {
+                                createInitialStatus = KanbanSessionStatus.Todo
+                                model.loadCatalogSilent()
+                                showCreateSheet = true
+                            },
                     )
                 }
+            } else {
+                Row(
+                    Modifier
+                        .align(Alignment.CenterStart)
+                        .clip(CircleShape)
+                        .clickable { viewMode = KanbanViewMode.Columns.id }
+                        .padding(vertical = 4.dp, horizontal = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(3.dp),
+                ) {
+                    Icon(
+                        Icons.AutoMirrored.Rounded.ArrowBackIos,
+                        contentDescription = "返回看板",
+                        tint = colors.accent,
+                        modifier = Modifier.size(15.dp),
+                    )
+                    Text(
+                        "看板",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.accent,
+                    )
+                }
+
+                Text(
+                    "计量统计",
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.textPrimary,
+                    modifier = Modifier.align(Alignment.Center),
+                )
+
+                Icon(
+                    Icons.Rounded.Refresh,
+                    contentDescription = "刷新统计",
+                    tint = colors.accent,
+                    modifier = Modifier
+                        .align(Alignment.CenterEnd)
+                        .size(21.dp)
+                        .clickable { usageRefreshTrigger++ },
+                )
             }
         }
 
@@ -504,12 +445,8 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
                     isLoading = isLoading,
                     errorMessage = errorMessage,
                     activeSessions = activeSessions,
-                    columnsLayout = columnsLayout,
-                    onColumnsLayoutChange = { columnsLayout = it },
-                    focusedColumn = focusedColumn,
-                    onFocusedColumnChange = { focusedColumnRaw = it.rawValue },
-                    monitoredSessionIds = monitoredSessionIds,
                     onReload = { scope.launch { reload() } },
+                    onOpenUsage = { viewMode = KanbanViewMode.Usage.id },
                     onCreateInColumn = { colStatus ->
                         createInitialStatus = colStatus
                         showCreateSheet = true
@@ -521,66 +458,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
                         renameDraft = target.resolvedTitle
                         renamingSession = target
                     },
-                    onToggleMonitor = ::toggleMonitor,
-                    onFork = ::performFork,
-                    onCopyText = { text, msg ->
-                        clipboard.setText(AnnotatedString(text))
-                        noticeMessage = msg
-                    },
-                    onRequestDelete = { deletingSession = it },
-                )
-            }
-
-            KanbanViewMode.SessionHub.id -> {
-                SessionHubContent(
-                    state = state,
-                    model = model,
-                    projects = projects,
-                    sessions = sessions,
-                    activeSessions = activeSessions,
-                    archivedSessions = archivedSessions,
-                    effectiveMonitoredSessions = effectiveMonitoredSessions,
-                    monitoredSessionIds = monitoredSessionIds,
-                    monitorPreviews = monitorPreviews,
-                    hubSubMode = hubSubMode,
-                    onHubSubModeChange = { hubSubMode = it },
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = { searchQuery = it },
-                    sortField = sortField,
-                    onSortFieldChange = { sortField = it },
-                    selectedWorkspaceIds = selectedWorkspaceIds,
-                    onSelectedWorkspaceIdsChange = { selectedWorkspaceIds = it },
-                    selectedAgentKeys = selectedAgentKeys,
-                    onSelectedAgentKeysChange = { selectedAgentKeys = it },
-                    isArchiveView = isArchiveView,
-                    onArchiveViewChange = {
-                        isArchiveView = it
-                        isBulkDeleteMode = false
-                        selectedDeleteIds = emptySet()
-                    },
-                    isBulkDeleteMode = isBulkDeleteMode,
-                    onBulkDeleteModeChange = {
-                        isBulkDeleteMode = it
-                        selectedDeleteIds = emptySet()
-                    },
-                    selectedDeleteIds = selectedDeleteIds,
-                    onSelectedDeleteIdsChange = { selectedDeleteIds = it },
-                    onRequestBulkDeleteConfirm = { showBulkDeleteConfirm = true },
-                    collapsedStatuses = collapsedStatuses,
-                    onCollapsedStatusesChange = { collapsedStatuses = it },
-                    canvasGrouping = canvasGrouping,
-                    onCanvasGroupingChange = { canvasGrouping = it },
-                    collapsedCanvasGroups = collapsedCanvasGroups,
-                    onCollapsedCanvasGroupsChange = { collapsedCanvasGroups = it },
-                    onShowAddMonitorPicker = { showAddMonitorPicker = true },
-                    onOpenSession = ::openSession,
-                    onStatusChange = ::performStatusChange,
-                    onTogglePin = ::performTogglePin,
-                    onRequestRename = { target ->
-                        renameDraft = target.resolvedTitle
-                        renamingSession = target
-                    },
-                    onToggleMonitor = ::toggleMonitor,
                     onFork = ::performFork,
                     onCopyText = { text, msg ->
                         clipboard.setText(AnnotatedString(text))
@@ -595,6 +472,7 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
                     model = model,
                     projects = projects,
                     initialProjectId = selectedProjectId,
+                    refreshTrigger = usageRefreshTrigger,
                 )
             }
         }
@@ -604,81 +482,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
         NewConversationSheet(state, model) {
             showCreateSheet = false
             scope.launch { reload() }
-        }
-    }
-
-    if (showAddMonitorPicker) {
-        ModalBottomSheet(
-            onDismissRequest = { showAddMonitorPicker = false },
-            containerColor = colors.bg,
-        ) {
-            Column(
-                Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-            ) {
-                Row(
-                    Modifier.fillMaxWidth().padding(bottom = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "选择监控会话",
-                        fontSize = 16.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.textPrimary,
-                        modifier = Modifier.weight(1f),
-                    )
-                    Text(
-                        "完成",
-                        fontSize = 14.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.accent,
-                        modifier = Modifier.clickable { showAddMonitorPicker = false },
-                    )
-                }
-                LazyColumn(
-                    contentPadding = PaddingValues(bottom = 32.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(activeSessions, key = { it.id }) { session ->
-                        val isMonitored = session.id in monitoredSessionIds
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(colors.card)
-                                .border(0.75.dp, colors.stroke, RoundedCornerShape(12.dp))
-                                .clickable { toggleMonitor(session) }
-                                .padding(horizontal = 12.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            AgentAvatar(session.effectiveAgentKey, 22.dp)
-                            Column(Modifier.weight(1f)) {
-                                Text(
-                                    session.resolvedTitle,
-                                    fontSize = 14.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = colors.textPrimary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                                Text(
-                                    "${session.agentDisplayLabel} · ${session.status.title}",
-                                    fontSize = 12.sp,
-                                    color = colors.textSecondary,
-                                )
-                            }
-                            Icon(
-                                imageVector = if (isMonitored) Icons.Rounded.CheckCircle else Icons.Rounded.AddCircle,
-                                contentDescription = null,
-                                tint = if (isMonitored) colors.accent else colors.textSecondary,
-                                modifier = Modifier.size(20.dp),
-                            )
-                        }
-                    }
-                }
-            }
         }
     }
 
@@ -729,25 +532,6 @@ fun StatusScreen(state: UiState, model: CompanionModel) {
             },
         )
     }
-
-    if (showBulkDeleteConfirm) {
-        AlertDialog(
-            onDismissRequest = { showBulkDeleteConfirm = false },
-            title = { Text("批量删除会话") },
-            text = { Text("确定删除已选中的 ${selectedDeleteIds.size} 个会话吗？正在执行中的会话不会被删除。") },
-            confirmButton = {
-                TextButton(
-                    onClick = {
-                        showBulkDeleteConfirm = false
-                        performBulkDelete()
-                    },
-                ) { Text("删除 (${selectedDeleteIds.size})", color = colors.danger) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showBulkDeleteConfirm = false }) { Text("取消") }
-            },
-        )
-    }
 }
 
 // ============================================================================
@@ -759,23 +543,26 @@ private fun ColumnsBoardContent(
     isLoading: Boolean,
     errorMessage: String?,
     activeSessions: List<KanbanSessionSummary>,
-    columnsLayout: String,
-    onColumnsLayoutChange: (String) -> Unit,
-    focusedColumn: KanbanSessionStatus,
-    onFocusedColumnChange: (KanbanSessionStatus) -> Unit,
-    monitoredSessionIds: Set<String>,
     onReload: () -> Unit,
+    onOpenUsage: () -> Unit,
     onCreateInColumn: (KanbanSessionStatus) -> Unit,
     onOpenSession: (KanbanSessionSummary) -> Unit,
     onStatusChange: (KanbanSessionSummary, KanbanSessionStatus) -> Unit,
     onTogglePin: (KanbanSessionSummary) -> Unit,
     onRequestRename: (KanbanSessionSummary) -> Unit,
-    onToggleMonitor: (KanbanSessionSummary) -> Unit,
     onFork: (KanbanSessionSummary) -> Unit,
     onCopyText: (String, String) -> Unit,
     onRequestDelete: (KanbanSessionSummary) -> Unit,
 ) {
     val colors = VibexTheme.colors
+    val haptic = LocalHapticFeedback.current
+    val density = LocalDensity.current
+
+    var pullOffsetPx by remember { mutableFloatStateOf(0f) }
+    var didTriggerFullPullHaptic by remember { mutableStateOf(false) }
+    val refreshThresholdPx = with(density) { 45.dp.toPx() }
+    val usageThresholdPx = with(density) { 100.dp.toPx() }
+    val pullOffsetDp = with(density) { pullOffsetPx.toDp() }
 
     if (isLoading && activeSessions.isEmpty()) {
         Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
@@ -800,187 +587,108 @@ private fun ColumnsBoardContent(
         return
     }
 
-    Column(Modifier.fillMaxSize()) {
-        // Sub-controls bar: Segmented Picker (四栏画板 | 分栏列表) | 共 N 个活跃会话 | Refresh
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            Row(
-                Modifier
-                    .width(170.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(colors.segmentedTrack)
-                    .padding(2.dp),
+    Box(
+        Modifier
+            .fillMaxSize()
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onVerticalDrag = { _, dragAmount ->
+                        if (dragAmount > 0f || pullOffsetPx > 0f) {
+                            val next = (pullOffsetPx + dragAmount * 0.65f).coerceIn(0f, usageThresholdPx * 1.35f)
+                            pullOffsetPx = next
+                            if (next >= usageThresholdPx && !didTriggerFullPullHaptic) {
+                                didTriggerFullPullHaptic = true
+                                haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                            } else if (next < usageThresholdPx) {
+                                didTriggerFullPullHaptic = false
+                            }
+                        }
+                    },
+                    onDragEnd = {
+                        val finalPx = pullOffsetPx
+                        pullOffsetPx = 0f
+                        didTriggerFullPullHaptic = false
+                        if (finalPx >= usageThresholdPx) {
+                            onOpenUsage()
+                        } else if (finalPx >= refreshThresholdPx) {
+                            onReload()
+                        }
+                    },
+                    onDragCancel = {
+                        pullOffsetPx = 0f
+                        didTriggerFullPullHaptic = false
+                    },
+                )
+            },
+    ) {
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val columnWidth = minOf(maxWidth - 52.dp, 344.dp).coerceAtLeast(260.dp)
+            val boardListState = rememberLazyListState()
+            LazyRow(
+                state = boardListState,
+                flingBehavior = rememberSnapFlingBehavior(boardListState),
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 10.dp + (pullOffsetDp * 0.35f).coerceAtMost(42.dp),
+                    bottom = 20.dp,
+                ),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                ColumnsLayoutStyle.entries.forEach { style ->
-                    val selected = columnsLayout == style.id
-                    Text(
-                        style.title,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (selected) colors.textPrimary else colors.textSecondary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .weight(1f)
-                            .then(
-                                if (selected) Modifier.shadow(1.5.dp, RoundedCornerShape(6.dp), ambientColor = Color.Black.copy(0.08f))
-                                else Modifier,
-                            )
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (selected) colors.segmentedThumb else Color.Transparent)
-                            .clickable { onColumnsLayoutChange(style.id) }
-                            .padding(vertical = 5.dp),
+                items(KanbanSessionStatus.activeColumns, key = { it.rawValue }) { colStatus ->
+                    val colItems = remember(activeSessions, colStatus) {
+                        sortKanbanSessions(activeSessions.filter { it.status == colStatus }, KanbanSortField.DefaultOrder)
+                    }
+                    KanbanColumnCard(
+                        status = colStatus,
+                        width = columnWidth,
+                        items = colItems,
+                        onCreateInColumn = { onCreateInColumn(colStatus) },
+                        onOpenSession = onOpenSession,
+                        onStatusChange = onStatusChange,
+                        onTogglePin = onTogglePin,
+                        onRequestRename = onRequestRename,
+                        onFork = onFork,
+                        onCopyText = onCopyText,
+                        onRequestDelete = onRequestDelete,
                     )
                 }
             }
-
-            Spacer(Modifier.weight(1f))
-
-            Text(
-                "共 ${activeSessions.size} 个活跃会话",
-                fontSize = 12.sp,
-                color = colors.textSecondary,
-            )
-
-            Box(
-                Modifier
-                    .size(28.dp)
-                    .clip(CircleShape)
-                    .background(colors.bgElevated)
-                    .clickable(onClick = onReload),
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新", tint = colors.textPrimary, modifier = Modifier.size(15.dp))
-            }
         }
 
-        if (columnsLayout == ColumnsLayoutStyle.HorizontalBoard.id) {
-            BoxWithConstraints(Modifier.fillMaxSize()) {
-                val columnWidth = minOf(maxWidth - 58.dp, 340.dp).coerceAtLeast(260.dp)
-                val boardListState = rememberLazyListState()
-                LazyRow(
-                    state = boardListState,
-                    flingBehavior = rememberSnapFlingBehavior(boardListState),
-                    modifier = Modifier.fillMaxSize(),
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 12.dp),
-                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                ) {
-                    items(KanbanSessionStatus.activeColumns, key = { it.rawValue }) { colStatus ->
-                        val colItems = remember(activeSessions, colStatus) {
-                            sortKanbanSessions(activeSessions.filter { it.status == colStatus }, KanbanSortField.DefaultOrder)
-                        }
-                        KanbanColumnCard(
-                            status = colStatus,
-                            width = columnWidth,
-                            items = colItems,
-                            monitoredSessionIds = monitoredSessionIds,
-                            onCreateInColumn = { onCreateInColumn(colStatus) },
-                            onOpenSession = onOpenSession,
-                            onStatusChange = onStatusChange,
-                            onTogglePin = onTogglePin,
-                            onRequestRename = onRequestRename,
-                            onToggleMonitor = onToggleMonitor,
-                            onFork = onFork,
-                            onCopyText = onCopyText,
-                            onRequestDelete = onRequestDelete,
-                        )
-                    }
-                }
+        if (pullOffsetPx > with(density) { 8.dp.toPx() }) {
+            val isDeepPull = pullOffsetPx >= usageThresholdPx
+            val isHalfPull = pullOffsetPx >= refreshThresholdPx && !isDeepPull
+            val label = when {
+                isDeepPull -> "松手打开计量统计"
+                isHalfPull -> "松手刷新看板 · 继续下拉打开计量统计"
+                else -> "下拉刷新 · 拉到底打开计量统计"
             }
-        } else {
-            Column(Modifier.fillMaxSize()) {
-                LazyRow(
-                    contentPadding = PaddingValues(horizontal = 16.dp, vertical = 4.dp),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    items(KanbanSessionStatus.activeColumns, key = { it.rawValue }) { status ->
-                        val count = activeSessions.count { it.status == status }
-                        val selected = focusedColumn == status
-                        val colColor = statusColor(status)
-                        Row(
-                            Modifier
-                                .clip(CircleShape)
-                                .background(if (selected) colColor else colors.bgElevated)
-                                .clickable { onFocusedColumnChange(status) }
-                                .padding(horizontal = 12.dp, vertical = 7.dp),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Box(
-                                Modifier
-                                    .size(8.dp)
-                                    .clip(CircleShape)
-                                    .background(if (selected) Color.White else colColor),
-                            )
-                            Text(
-                                status.title,
-                                fontSize = 13.sp,
-                                fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                                color = if (selected) Color.White else colors.textPrimary,
-                            )
-                            Text(
-                                "$count",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                fontFamily = PlexMono,
-                                color = if (selected) Color.White else colors.textSecondary,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(if (selected) Color.White.copy(0.22f) else colors.stroke)
-                                    .padding(horizontal = 6.dp, vertical = 2.dp),
-                            )
-                        }
-                    }
-                }
-
-                val colItems = remember(activeSessions, focusedColumn) {
-                    sortKanbanSessions(activeSessions.filter { it.status == focusedColumn }, KanbanSortField.DefaultOrder)
-                }
-                if (colItems.isEmpty()) {
-                    Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                        Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                            Icon(Icons.Rounded.ViewColumn, null, tint = colors.textSecondary, modifier = Modifier.size(36.dp))
-                            Text("“${focusedColumn.title}”暂无会话", fontSize = 14.sp, color = colors.textSecondary)
-                            Row(
-                                Modifier
-                                    .clip(CircleShape)
-                                    .background(colors.accent)
-                                    .clickable { onCreateInColumn(focusedColumn) }
-                                    .padding(horizontal = 14.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(Icons.Rounded.Add, null, tint = Color.White, modifier = Modifier.size(14.dp))
-                                Text("新建${focusedColumn.title}会话", fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = Color.White)
-                            }
-                        }
-                    }
-                } else {
-                    LazyColumn(
-                        contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        items(colItems, key = { it.id }) { session ->
-                            KanbanSessionItemCard(
-                                session = session,
-                                showStatusPill = false,
-                                isMonitored = session.id in monitoredSessionIds,
-                                onOpenSession = { onOpenSession(session) },
-                                onStatusChange = { onStatusChange(session, it) },
-                                onTogglePin = { onTogglePin(session) },
-                                onRequestRename = { onRequestRename(session) },
-                                onToggleMonitor = { onToggleMonitor(session) },
-                                onFork = { onFork(session) },
-                                onCopyText = onCopyText,
-                                onRequestDelete = { onRequestDelete(session) },
-                            )
-                        }
-                    }
-                }
+            Row(
+                Modifier
+                    .align(Alignment.TopCenter)
+                    .padding(top = 8.dp)
+                    .shadow(8.dp, CircleShape)
+                    .clip(CircleShape)
+                    .background(if (isDeepPull) colors.accent else colors.bgElevated)
+                    .border(0.5.dp, colors.stroke, CircleShape)
+                    .padding(horizontal = 14.dp, vertical = 7.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Icon(
+                    imageVector = if (isDeepPull) Icons.Rounded.BarChart else Icons.Rounded.Refresh,
+                    contentDescription = null,
+                    tint = if (isDeepPull) Color.White else colors.accent,
+                    modifier = Modifier.size(14.dp),
+                )
+                Text(
+                    label,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = if (isDeepPull) Color.White else colors.textPrimary,
+                )
             }
         }
     }
@@ -991,13 +699,11 @@ private fun KanbanColumnCard(
     status: KanbanSessionStatus,
     width: Dp,
     items: List<KanbanSessionSummary>,
-    monitoredSessionIds: Set<String>,
     onCreateInColumn: () -> Unit,
     onOpenSession: (KanbanSessionSummary) -> Unit,
     onStatusChange: (KanbanSessionSummary, KanbanSessionStatus) -> Unit,
     onTogglePin: (KanbanSessionSummary) -> Unit,
     onRequestRename: (KanbanSessionSummary) -> Unit,
-    onToggleMonitor: (KanbanSessionSummary) -> Unit,
     onFork: (KanbanSessionSummary) -> Unit,
     onCopyText: (String, String) -> Unit,
     onRequestDelete: (KanbanSessionSummary) -> Unit,
@@ -1065,12 +771,10 @@ private fun KanbanColumnCard(
                     KanbanSessionItemCard(
                         session = session,
                         showStatusPill = false,
-                        isMonitored = session.id in monitoredSessionIds,
                         onOpenSession = { onOpenSession(session) },
                         onStatusChange = { onStatusChange(session, it) },
                         onTogglePin = { onTogglePin(session) },
                         onRequestRename = { onRequestRename(session) },
-                        onToggleMonitor = { onToggleMonitor(session) },
                         onFork = { onFork(session) },
                         onCopyText = onCopyText,
                         onRequestDelete = { onRequestDelete(session) },
@@ -1082,1235 +786,7 @@ private fun KanbanColumnCard(
 }
 
 // ============================================================================
-// MARK: - 2. Session Hub (`sessionHubContent`: List + Monitor + Canvas + Archive)
-// ============================================================================
-
-@Composable
-private fun SessionHubContent(
-    state: UiState,
-    model: CompanionModel,
-    projects: List<CatalogProject>,
-    sessions: List<KanbanSessionSummary>,
-    activeSessions: List<KanbanSessionSummary>,
-    archivedSessions: List<KanbanSessionSummary>,
-    effectiveMonitoredSessions: List<KanbanSessionSummary>,
-    monitoredSessionIds: Set<String>,
-    monitorPreviews: MutableMap<String, String>,
-    hubSubMode: String,
-    onHubSubModeChange: (String) -> Unit,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    sortField: KanbanSortField,
-    onSortFieldChange: (KanbanSortField) -> Unit,
-    selectedWorkspaceIds: Set<String>,
-    onSelectedWorkspaceIdsChange: (Set<String>) -> Unit,
-    selectedAgentKeys: Set<String>,
-    onSelectedAgentKeysChange: (Set<String>) -> Unit,
-    isArchiveView: Boolean,
-    onArchiveViewChange: (Boolean) -> Unit,
-    isBulkDeleteMode: Boolean,
-    onBulkDeleteModeChange: (Boolean) -> Unit,
-    selectedDeleteIds: Set<String>,
-    onSelectedDeleteIdsChange: (Set<String>) -> Unit,
-    onRequestBulkDeleteConfirm: () -> Unit,
-    collapsedStatuses: Set<KanbanSessionStatus>,
-    onCollapsedStatusesChange: (Set<KanbanSessionStatus>) -> Unit,
-    canvasGrouping: String,
-    onCanvasGroupingChange: (String) -> Unit,
-    collapsedCanvasGroups: Set<String>,
-    onCollapsedCanvasGroupsChange: (Set<String>) -> Unit,
-    onShowAddMonitorPicker: () -> Unit,
-    onOpenSession: (KanbanSessionSummary) -> Unit,
-    onStatusChange: (KanbanSessionSummary, KanbanSessionStatus) -> Unit,
-    onTogglePin: (KanbanSessionSummary) -> Unit,
-    onRequestRename: (KanbanSessionSummary) -> Unit,
-    onToggleMonitor: (KanbanSessionSummary) -> Unit,
-    onFork: (KanbanSessionSummary) -> Unit,
-    onCopyText: (String, String) -> Unit,
-    onRequestDelete: (KanbanSessionSummary) -> Unit,
-) {
-    val colors = VibexTheme.colors
-
-    Column(Modifier.fillMaxSize()) {
-        // Sub-mode switcher: 会话列表 / 会话监控区 / 画布分组
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            SessionHubSubMode.entries.forEach { mode ->
-                val selected = hubSubMode == mode.id
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(if (selected) colors.accent.copy(alpha = 0.14f) else colors.card)
-                        .border(
-                            width = 0.75.dp,
-                            color = if (selected) colors.accent.copy(alpha = 0.45f) else colors.stroke,
-                            shape = CircleShape,
-                        )
-                        .clickable { onHubSubModeChange(mode.id) }
-                        .padding(horizontal = 12.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        mode.icon,
-                        contentDescription = null,
-                        tint = if (selected) colors.accent else colors.textSecondary,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        mode.title,
-                        fontSize = 12.5.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (selected) colors.accent else colors.textPrimary,
-                    )
-                    if (mode == SessionHubSubMode.Monitor && effectiveMonitoredSessions.isNotEmpty()) {
-                        Text(
-                            "${effectiveMonitoredSessions.size}",
-                            fontSize = 10.5.sp,
-                            fontWeight = FontWeight.Bold,
-                            fontFamily = PlexMono,
-                            color = if (selected) Color.White else colors.accent,
-                            modifier = Modifier
-                                .clip(CircleShape)
-                                .background(if (selected) colors.accent else colors.accent.copy(0.14f))
-                                .padding(horizontal = 5.5.dp, vertical = 1.dp),
-                        )
-                    }
-                }
-            }
-            Spacer(Modifier.weight(1f))
-        }
-
-        when (hubSubMode) {
-            SessionHubSubMode.List.id -> {
-                SessionHubListView(
-                    state = state,
-                    sessions = sessions,
-                    activeSessions = activeSessions,
-                    archivedSessions = archivedSessions,
-                    monitoredSessionIds = monitoredSessionIds,
-                    searchQuery = searchQuery,
-                    onSearchQueryChange = onSearchQueryChange,
-                    sortField = sortField,
-                    onSortFieldChange = onSortFieldChange,
-                    selectedWorkspaceIds = selectedWorkspaceIds,
-                    onSelectedWorkspaceIdsChange = onSelectedWorkspaceIdsChange,
-                    selectedAgentKeys = selectedAgentKeys,
-                    onSelectedAgentKeysChange = onSelectedAgentKeysChange,
-                    isArchiveView = isArchiveView,
-                    onArchiveViewChange = onArchiveViewChange,
-                    isBulkDeleteMode = isBulkDeleteMode,
-                    onBulkDeleteModeChange = onBulkDeleteModeChange,
-                    selectedDeleteIds = selectedDeleteIds,
-                    onSelectedDeleteIdsChange = onSelectedDeleteIdsChange,
-                    onRequestBulkDeleteConfirm = onRequestBulkDeleteConfirm,
-                    collapsedStatuses = collapsedStatuses,
-                    onCollapsedStatusesChange = onCollapsedStatusesChange,
-                    onOpenSession = onOpenSession,
-                    onStatusChange = onStatusChange,
-                    onTogglePin = onTogglePin,
-                    onRequestRename = onRequestRename,
-                    onToggleMonitor = onToggleMonitor,
-                    onFork = onFork,
-                    onCopyText = onCopyText,
-                    onRequestDelete = onRequestDelete,
-                )
-            }
-
-            SessionHubSubMode.Monitor.id -> {
-                SessionHubMonitorView(
-                    model = model,
-                    monitored = effectiveMonitoredSessions,
-                    monitorPreviews = monitorPreviews,
-                    onShowAddMonitorPicker = onShowAddMonitorPicker,
-                    onRemoveMonitor = { onToggleMonitor(it) },
-                    onOpenSession = onOpenSession,
-                )
-            }
-
-            else -> {
-                SessionHubCanvasView(
-                    state = state,
-                    projects = projects,
-                    activeSessions = activeSessions,
-                    monitoredSessionIds = monitoredSessionIds,
-                    canvasGrouping = canvasGrouping,
-                    onCanvasGroupingChange = onCanvasGroupingChange,
-                    collapsedCanvasGroups = collapsedCanvasGroups,
-                    onCollapsedCanvasGroupsChange = onCollapsedCanvasGroupsChange,
-                    onOpenSession = onOpenSession,
-                    onStatusChange = onStatusChange,
-                    onTogglePin = onTogglePin,
-                    onRequestRename = onRequestRename,
-                    onToggleMonitor = onToggleMonitor,
-                    onFork = onFork,
-                    onCopyText = onCopyText,
-                    onRequestDelete = onRequestDelete,
-                )
-            }
-        }
-    }
-}
-
-@Composable
-private fun SessionHubListView(
-    state: UiState,
-    sessions: List<KanbanSessionSummary>,
-    activeSessions: List<KanbanSessionSummary>,
-    archivedSessions: List<KanbanSessionSummary>,
-    monitoredSessionIds: Set<String>,
-    searchQuery: String,
-    onSearchQueryChange: (String) -> Unit,
-    sortField: KanbanSortField,
-    onSortFieldChange: (KanbanSortField) -> Unit,
-    selectedWorkspaceIds: Set<String>,
-    onSelectedWorkspaceIdsChange: (Set<String>) -> Unit,
-    selectedAgentKeys: Set<String>,
-    onSelectedAgentKeysChange: (Set<String>) -> Unit,
-    isArchiveView: Boolean,
-    onArchiveViewChange: (Boolean) -> Unit,
-    isBulkDeleteMode: Boolean,
-    onBulkDeleteModeChange: (Boolean) -> Unit,
-    selectedDeleteIds: Set<String>,
-    onSelectedDeleteIdsChange: (Set<String>) -> Unit,
-    onRequestBulkDeleteConfirm: () -> Unit,
-    collapsedStatuses: Set<KanbanSessionStatus>,
-    onCollapsedStatusesChange: (Set<KanbanSessionStatus>) -> Unit,
-    onOpenSession: (KanbanSessionSummary) -> Unit,
-    onStatusChange: (KanbanSessionSummary, KanbanSessionStatus) -> Unit,
-    onTogglePin: (KanbanSessionSummary) -> Unit,
-    onRequestRename: (KanbanSessionSummary) -> Unit,
-    onToggleMonitor: (KanbanSessionSummary) -> Unit,
-    onFork: (KanbanSessionSummary) -> Unit,
-    onCopyText: (String, String) -> Unit,
-    onRequestDelete: (KanbanSessionSummary) -> Unit,
-) {
-    val colors = VibexTheme.colors
-    var showSortMenu by remember { mutableStateOf(false) }
-    var showAgentFilterMenu by remember { mutableStateOf(false) }
-    var showWorkspaceFilterMenu by remember { mutableStateOf(false) }
-
-    val availableAgentKeys = remember(sessions) {
-        sessions.map { it.effectiveAgentKey }.filter { it.isNotBlank() }.distinct().sorted()
-    }
-    val availableWorkspaces = remember(sessions, state.catalog?.workspaces) {
-        val map = linkedMapOf<String, String>()
-        state.catalog?.workspaces.orEmpty().forEach { ws ->
-            map[ws.id] = ws.name.ifBlank { ws.branch.ifBlank { "默认工作区" } }
-        }
-        sessions.forEach { s ->
-            if (s.workspaceId.isNotBlank() && s.workspaceId !in map) {
-                map[s.workspaceId] = s.workspaceDisplayLabel.ifBlank { "默认工作区" }
-            }
-        }
-        map.entries.map { it.key to it.value }.sortedBy { it.second }
-    }
-
-    val hasActiveFilters = sortField != KanbanSortField.DefaultOrder ||
-        selectedAgentKeys.isNotEmpty() ||
-        selectedWorkspaceIds.isNotEmpty() ||
-        searchQuery.isNotBlank()
-
-    fun applyFilters(input: List<KanbanSessionSummary>): List<KanbanSessionSummary> {
-        val needle = searchQuery.trim().lowercase()
-        val filtered = input.filter { s ->
-            if (selectedWorkspaceIds.isNotEmpty() && s.workspaceId !in selectedWorkspaceIds) return@filter false
-            if (selectedAgentKeys.isNotEmpty() && s.effectiveAgentKey !in selectedAgentKeys) return@filter false
-            if (needle.isNotEmpty()) {
-                val matchTitle = s.resolvedTitle.lowercase().contains(needle)
-                val matchPrompt = s.firstPrompt?.lowercase()?.contains(needle) == true
-                val matchBranch = s.workspaceDisplayLabel.lowercase().contains(needle)
-                val matchAgent = s.agentDisplayLabel.lowercase().contains(needle)
-                if (!(matchTitle || matchPrompt || matchBranch || matchAgent)) return@filter false
-            }
-            true
-        }
-        return sortKanbanSessions(filtered, sortField)
-    }
-
-    val filteredActive = remember(activeSessions, searchQuery, sortField, selectedWorkspaceIds, selectedAgentKeys) {
-        applyFilters(activeSessions)
-    }
-    val filteredArchived = remember(archivedSessions, searchQuery, sortField, selectedWorkspaceIds, selectedAgentKeys) {
-        applyFilters(archivedSessions)
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        // Controls Row: Sort, Agent Filter, Workspace Filter, Archive Toggle, Bulk Delete
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState())
-                .padding(horizontal = 16.dp, vertical = 4.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            // Sort Menu
-            Box {
-                val activeSort = sortField != KanbanSortField.DefaultOrder
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(if (!activeSort) colors.card else colors.accent.copy(0.14f))
-                        .border(0.6.dp, if (!activeSort) colors.stroke else colors.accent.copy(0.35f), CircleShape)
-                        .clickable { showSortMenu = true }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    Icon(
-                        Icons.AutoMirrored.Rounded.Sort,
-                        null,
-                        tint = if (activeSort) colors.accent else colors.textPrimary,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        if (!activeSort) "排序" else "排序：${sortField.label}",
-                        fontSize = 12.sp,
-                        fontWeight = FontWeight.Medium,
-                        color = if (activeSort) colors.accent else colors.textPrimary,
-                        maxLines = 1,
-                        softWrap = false,
-                    )
-                }
-                DropdownMenu(expanded = showSortMenu, onDismissRequest = { showSortMenu = false }) {
-                    KanbanSortField.entries.forEach { field ->
-                        DropdownMenuItem(
-                            text = { Text(field.label) },
-                            trailingIcon = if (sortField == field) {
-                                { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                            } else null,
-                            onClick = {
-                                showSortMenu = false
-                                onSortFieldChange(field)
-                            },
-                        )
-                    }
-                }
-            }
-
-            // Agent Filter Menu
-            if (availableAgentKeys.isNotEmpty()) {
-                Box {
-                    val activeAgentFilter = selectedAgentKeys.isNotEmpty()
-                    Row(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(if (!activeAgentFilter) colors.card else colors.accent.copy(0.14f))
-                            .border(0.6.dp, if (!activeAgentFilter) colors.stroke else colors.accent.copy(0.35f), CircleShape)
-                            .clickable { showAgentFilterMenu = true }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            Icons.Rounded.FilterList,
-                            null,
-                            tint = if (activeAgentFilter) colors.accent else colors.textPrimary,
-                            modifier = Modifier.size(13.dp),
-                        )
-                        Text(
-                            if (!activeAgentFilter) "代理筛选" else "代理：${selectedAgentKeys.size}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (activeAgentFilter) colors.accent else colors.textPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
-                    DropdownMenu(expanded = showAgentFilterMenu, onDismissRequest = { showAgentFilterMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("全部代理") },
-                            onClick = {
-                                onSelectedAgentKeysChange(emptySet())
-                                showAgentFilterMenu = false
-                            },
-                        )
-                        HorizontalDivider()
-                        availableAgentKeys.forEach { key ->
-                            val selected = key in selectedAgentKeys
-                            DropdownMenuItem(
-                                text = { Text(agentDisplayName(key)) },
-                                leadingIcon = { AgentAvatar(key, 18.dp) },
-                                trailingIcon = if (selected) {
-                                    { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                                } else null,
-                                onClick = {
-                                    onSelectedAgentKeysChange(if (selected) selectedAgentKeys - key else selectedAgentKeys + key)
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Workspace Filter Menu
-            if (availableWorkspaces.size > 1) {
-                Box {
-                    val activeWsFilter = selectedWorkspaceIds.isNotEmpty()
-                    Row(
-                        Modifier
-                            .clip(CircleShape)
-                            .background(if (!activeWsFilter) colors.card else colors.accent.copy(0.14f))
-                            .border(0.6.dp, if (!activeWsFilter) colors.stroke else colors.accent.copy(0.35f), CircleShape)
-                            .clickable { showWorkspaceFilterMenu = true }
-                            .padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                    ) {
-                        Icon(
-                            Icons.Rounded.AccountTree,
-                            null,
-                            tint = if (activeWsFilter) colors.accent else colors.textPrimary,
-                            modifier = Modifier.size(13.dp),
-                        )
-                        Text(
-                            if (!activeWsFilter) "工作区" else "工作区：${selectedWorkspaceIds.size}",
-                            fontSize = 12.sp,
-                            fontWeight = FontWeight.Medium,
-                            color = if (activeWsFilter) colors.accent else colors.textPrimary,
-                            maxLines = 1,
-                            softWrap = false,
-                        )
-                    }
-                    DropdownMenu(expanded = showWorkspaceFilterMenu, onDismissRequest = { showWorkspaceFilterMenu = false }) {
-                        DropdownMenuItem(
-                            text = { Text("全部工作区") },
-                            onClick = {
-                                onSelectedWorkspaceIdsChange(emptySet())
-                                showWorkspaceFilterMenu = false
-                            },
-                        )
-                        HorizontalDivider()
-                        availableWorkspaces.forEach { (wsId, wsLabel) ->
-                            val selected = wsId in selectedWorkspaceIds
-                            DropdownMenuItem(
-                                text = { Text(wsLabel) },
-                                trailingIcon = if (selected) {
-                                    { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                                } else null,
-                                onClick = {
-                                    onSelectedWorkspaceIdsChange(
-                                        if (selected) selectedWorkspaceIds - wsId else selectedWorkspaceIds + wsId,
-                                    )
-                                },
-                            )
-                        }
-                    }
-                }
-            }
-
-            // Archive Toggle
-            Row(
-                Modifier
-                    .clip(CircleShape)
-                    .background(if (isArchiveView) Color(0xFF5856D6) else colors.card)
-                    .border(0.6.dp, if (isArchiveView) Color.Transparent else colors.stroke, CircleShape)
-                    .clickable { onArchiveViewChange(!isArchiveView) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(
-                    imageVector = if (isArchiveView) Icons.Rounded.Unarchive else Icons.Rounded.Archive,
-                    contentDescription = null,
-                    tint = if (isArchiveView) Color.White else colors.textPrimary,
-                    modifier = Modifier.size(13.dp),
-                )
-                Text(
-                    if (isArchiveView) "返回会话列表" else "归档区 (${archivedSessions.size})",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (isArchiveView) Color.White else colors.textPrimary,
-                    maxLines = 1,
-                    softWrap = false,
-                )
-            }
-
-            // Bulk Delete Toggle
-            Row(
-                Modifier
-                    .clip(CircleShape)
-                    .background(if (isBulkDeleteMode) colors.danger else colors.card)
-                    .border(0.6.dp, if (isBulkDeleteMode) Color.Transparent else colors.stroke, CircleShape)
-                    .clickable { onBulkDeleteModeChange(!isBulkDeleteMode) }
-                    .padding(horizontal = 10.dp, vertical = 6.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(
-                    imageVector = if (isBulkDeleteMode) Icons.Rounded.Close else Icons.Rounded.Delete,
-                    contentDescription = null,
-                    tint = if (isBulkDeleteMode) Color.White else colors.danger,
-                    modifier = Modifier.size(13.dp),
-                )
-                Text(
-                    if (isBulkDeleteMode) "退出删除模式" else "批量删除",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = if (isBulkDeleteMode) Color.White else colors.danger,
-                    maxLines = 1,
-                    softWrap = false,
-                )
-            }
-
-            if (hasActiveFilters) {
-                Text(
-                    "恢复默认",
-                    fontSize = 12.sp,
-                    color = colors.accent,
-                    modifier = Modifier
-                        .clickable {
-                            onSortFieldChange(KanbanSortField.DefaultOrder)
-                            onSelectedAgentKeysChange(emptySet())
-                            onSelectedWorkspaceIdsChange(emptySet())
-                            onSearchQueryChange("")
-                        }
-                        .padding(horizontal = 8.dp, vertical = 6.dp),
-                )
-            }
-        }
-
-        if (isBulkDeleteMode) {
-            val currentPool = if (isArchiveView) filteredArchived else filteredActive
-            Row(
-                Modifier
-                    .fillMaxWidth()
-                    .background(colors.bgElevated)
-                    .padding(horizontal = 16.dp, vertical = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                val allSelected = currentPool.isNotEmpty() && selectedDeleteIds.size == currentPool.size
-                Text(
-                    if (allSelected) "取消全选" else "全选",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = colors.accent,
-                    modifier = Modifier.clickable {
-                        onSelectedDeleteIdsChange(if (allSelected) emptySet() else currentPool.map { it.id }.toSet())
-                    },
-                )
-                Text(
-                    "已选择 ${selectedDeleteIds.size} 项",
-                    fontSize = 12.sp,
-                    color = colors.textSecondary,
-                )
-                Spacer(Modifier.weight(1f))
-                Text(
-                    "删除选中",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Color.White,
-                    modifier = Modifier
-                        .clip(CircleShape)
-                        .background(if (selectedDeleteIds.isEmpty()) colors.textTertiary else colors.danger)
-                        .clickable(enabled = selectedDeleteIds.isNotEmpty(), onClick = onRequestBulkDeleteConfirm)
-                        .padding(horizontal = 12.dp, vertical = 5.dp),
-                )
-            }
-        }
-
-        Box(Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
-            SearchField(searchQuery, onSearchQueryChange, "搜索名称或用户消息…")
-        }
-
-        LazyColumn(
-            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 32.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
-        ) {
-            if (isArchiveView) {
-                if (filteredArchived.isEmpty()) {
-                    item {
-                        EmptyState(Icons.Rounded.Archive, "归档区暂无会话", "已归档的会话会显示在这里。")
-                    }
-                } else {
-                    item {
-                        Text(
-                            "归档区 (${filteredArchived.size})",
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            color = colors.textSecondary,
-                            modifier = Modifier.padding(vertical = 4.dp),
-                        )
-                    }
-                    items(filteredArchived, key = { it.id }) { session ->
-                        SessionHubListRow(
-                            session = session,
-                            isBulkDeleteMode = isBulkDeleteMode,
-                            isSelectedForDelete = session.id in selectedDeleteIds,
-                            isMonitored = session.id in monitoredSessionIds,
-                            onToggleDeleteSelect = {
-                                onSelectedDeleteIdsChange(
-                                    if (session.id in selectedDeleteIds) selectedDeleteIds - session.id
-                                    else selectedDeleteIds + session.id,
-                                )
-                            },
-                            onOpenSession = { onOpenSession(session) },
-                            onStatusChange = { onStatusChange(session, it) },
-                            onTogglePin = { onTogglePin(session) },
-                            onRequestRename = { onRequestRename(session) },
-                            onToggleMonitor = { onToggleMonitor(session) },
-                            onFork = { onFork(session) },
-                            onCopyText = onCopyText,
-                            onRequestDelete = { onRequestDelete(session) },
-                        )
-                    }
-                }
-            } else {
-                if (filteredActive.isEmpty()) {
-                    item {
-                        EmptyState(
-                            Icons.Rounded.ChatBubble,
-                            if (hasActiveFilters) "没有符合当前筛选或排序条件的会话" else "暂无会话",
-                            "点击右上角“+”即可创建新会话。",
-                        )
-                    }
-                } else {
-                    KanbanSessionStatus.activeColumns.forEach { status ->
-                        val groupItems = filteredActive.filter { it.status == status }
-                        if (groupItems.isNotEmpty()) {
-                            val isCollapsed = status in collapsedStatuses
-                            item(key = "header-${status.rawValue}") {
-                                Row(
-                                    Modifier
-                                        .fillMaxWidth()
-                                        .clickable {
-                                            onCollapsedStatusesChange(
-                                                if (isCollapsed) collapsedStatuses - status else collapsedStatuses + status,
-                                            )
-                                        }
-                                        .padding(vertical = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                ) {
-                                    Icon(
-                                        imageVector = if (isCollapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore,
-                                        contentDescription = null,
-                                        tint = colors.textSecondary,
-                                        modifier = Modifier.size(16.dp),
-                                    )
-                                    Box(Modifier.size(8.dp).clip(CircleShape).background(statusColor(status)))
-                                    Text(status.title, fontSize = 13.sp, fontWeight = FontWeight.SemiBold, color = colors.textPrimary)
-                                    Text(
-                                        "${groupItems.size}",
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.SemiBold,
-                                        fontFamily = PlexMono,
-                                        color = colors.textSecondary,
-                                        modifier = Modifier
-                                            .clip(CircleShape)
-                                            .background(colors.bgElevated)
-                                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                                    )
-                                    Spacer(Modifier.weight(1f))
-                                }
-                            }
-                            if (!isCollapsed) {
-                                items(groupItems, key = { it.id }) { session ->
-                                    SessionHubListRow(
-                                        session = session,
-                                        isBulkDeleteMode = isBulkDeleteMode,
-                                        isSelectedForDelete = session.id in selectedDeleteIds,
-                                        isMonitored = session.id in monitoredSessionIds,
-                                        onToggleDeleteSelect = {
-                                            onSelectedDeleteIdsChange(
-                                                if (session.id in selectedDeleteIds) selectedDeleteIds - session.id
-                                                else selectedDeleteIds + session.id,
-                                            )
-                                        },
-                                        onOpenSession = { onOpenSession(session) },
-                                        onStatusChange = { onStatusChange(session, it) },
-                                        onTogglePin = { onTogglePin(session) },
-                                        onRequestRename = { onRequestRename(session) },
-                                        onToggleMonitor = { onToggleMonitor(session) },
-                                        onFork = { onFork(session) },
-                                        onCopyText = onCopyText,
-                                        onRequestDelete = { onRequestDelete(session) },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-@Composable
-private fun SessionHubListRow(
-    session: KanbanSessionSummary,
-    isBulkDeleteMode: Boolean,
-    isSelectedForDelete: Boolean,
-    isMonitored: Boolean,
-    onToggleDeleteSelect: () -> Unit,
-    onOpenSession: () -> Unit,
-    onStatusChange: (KanbanSessionStatus) -> Unit,
-    onTogglePin: () -> Unit,
-    onRequestRename: () -> Unit,
-    onToggleMonitor: () -> Unit,
-    onFork: () -> Unit,
-    onCopyText: (String, String) -> Unit,
-    onRequestDelete: () -> Unit,
-) {
-    val colors = VibexTheme.colors
-    var showMenu by remember { mutableStateOf(false) }
-
-    Row(
-        Modifier
-            .fillMaxWidth()
-            .clip(RoundedCornerShape(14.dp))
-            .background(colors.card)
-            .border(0.75.dp, colors.stroke, RoundedCornerShape(14.dp))
-            .clickable {
-                if (isBulkDeleteMode) onToggleDeleteSelect() else onOpenSession()
-            }
-            .padding(horizontal = 12.dp, vertical = 10.dp),
-        verticalAlignment = Alignment.CenterVertically,
-        horizontalArrangement = Arrangement.spacedBy(10.dp),
-    ) {
-        if (isBulkDeleteMode) {
-            Icon(
-                imageVector = if (isSelectedForDelete) Icons.Rounded.CheckCircle else Icons.Rounded.RadioButtonUnchecked,
-                contentDescription = null,
-                tint = if (isSelectedForDelete) colors.accent else colors.textSecondary,
-                modifier = Modifier.size(20.dp).clickable(onClick = onToggleDeleteSelect),
-            )
-        }
-
-        Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(5.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                if (session.isPinned) {
-                    Icon(Icons.Rounded.PushPin, null, tint = Color(0xFFFF9500), modifier = Modifier.size(12.dp))
-                }
-                if (session.isRunning) {
-                    Text(
-                        "进行中",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFFFF9500),
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(Color(0xFFFF9500).copy(0.16f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                } else if (session.status == KanbanSessionStatus.InReview) {
-                    Text(
-                        "待检查",
-                        fontSize = 10.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFFAF52DE),
-                        modifier = Modifier
-                            .clip(CircleShape)
-                            .background(Color(0xFFAF52DE).copy(0.16f))
-                            .padding(horizontal = 6.dp, vertical = 1.dp),
-                    )
-                }
-                Text(
-                    session.resolvedTitle,
-                    fontSize = 14.sp,
-                    fontWeight = FontWeight.Medium,
-                    color = colors.textPrimary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.weight(1f),
-                )
-                Text(
-                    shortRelativeIso(session.updatedAt),
-                    fontSize = 11.sp,
-                    color = colors.textSecondary,
-                )
-            }
-
-            Row(
-                Modifier.fillMaxWidth(),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
-            ) {
-                Row(
-                    Modifier.weight(1f),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    val memberName = session.collaboration?.memberName?.takeIf { it.isNotBlank() }
-                    if (memberName != null) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(3.dp)) {
-                            Icon(Icons.Rounded.Groups, null, tint = Color(0xFF5856D6), modifier = Modifier.size(12.dp))
-                            Text(memberName, fontSize = 11.sp, color = Color(0xFF5856D6), maxLines = 1, softWrap = false)
-                        }
-                    }
-                    AgentAvatar(session.effectiveAgentKey, 13.dp)
-                    Text(
-                        session.model?.takeIf { it.isNotBlank() } ?: session.agentDisplayLabel,
-                        fontSize = 11.sp,
-                        color = colors.textSecondary,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
-                    if (session.workspaceDisplayLabel.isNotBlank()) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Icon(Icons.Rounded.AccountTree, null, tint = colors.textSecondary, modifier = Modifier.size(11.dp))
-                            Text(
-                                session.workspaceDisplayLabel,
-                                fontSize = 11.sp,
-                                color = colors.textSecondary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                        }
-                    }
-                }
-                if (isMonitored) {
-                    Icon(Icons.Rounded.Visibility, null, tint = colors.accent, modifier = Modifier.size(13.dp))
-                }
-            }
-        }
-
-        Box {
-            Icon(
-                Icons.Rounded.MoreHoriz,
-                contentDescription = "更多",
-                tint = colors.textSecondary,
-                modifier = Modifier.size(18.dp).clickable { showMenu = true },
-            )
-            KanbanSessionContextMenu(
-                expanded = showMenu,
-                onDismiss = { showMenu = false },
-                session = session,
-                isMonitored = isMonitored,
-                onOpenSession = onOpenSession,
-                onStatusChange = onStatusChange,
-                onTogglePin = onTogglePin,
-                onRequestRename = onRequestRename,
-                onToggleMonitor = onToggleMonitor,
-                onFork = onFork,
-                onCopyText = onCopyText,
-                onRequestDelete = onRequestDelete,
-            )
-        }
-    }
-}
-
-@Composable
-private fun SessionHubMonitorView(
-    model: CompanionModel,
-    monitored: List<KanbanSessionSummary>,
-    monitorPreviews: MutableMap<String, String>,
-    onShowAddMonitorPicker: () -> Unit,
-    onRemoveMonitor: (KanbanSessionSummary) -> Unit,
-    onOpenSession: (KanbanSessionSummary) -> Unit,
-) {
-    val colors = VibexTheme.colors
-    val slotColors = remember {
-        listOf(
-            Color(0xFF007AFF),
-            Color(0xFFAF52DE),
-            Color(0xFFFF9500),
-            Color(0xFF34C759),
-            Color(0xFFFF2D55),
-            Color(0xFF0DB49B),
-        )
-    }
-
-    LaunchedEffect(monitored.map { it.id }) {
-        for (session in monitored.take(6)) {
-            if (monitorPreviews[session.id] == null) {
-                val preview = runCatching { model.fetchMonitorPreview(session.id) }.getOrNull()
-                if (!preview.isNullOrBlank()) {
-                    monitorPreviews[session.id] = preview
-                }
-            }
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Text(
-                "会话监控区 (${monitored.size})",
-                fontSize = 14.sp,
-                fontWeight = FontWeight.SemiBold,
-                color = colors.textPrimary,
-                modifier = Modifier.weight(1f),
-            )
-            Row(
-                Modifier.clickable(onClick = onShowAddMonitorPicker),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
-            ) {
-                Icon(Icons.Rounded.AddCircle, null, tint = colors.accent, modifier = Modifier.size(15.dp))
-                Text("添加监控会话", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = colors.accent)
-            }
-        }
-
-        if (monitored.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyState(
-                    icon = Icons.Rounded.GridView,
-                    title = "会话监控区为空",
-                    message = "在会话列表中点击菜单选择“加入监控区”或点击上方“添加监控会话”，即可在此实时监控多个会话。",
-                    action = "添加监控会话",
-                    onAction = onShowAddMonitorPicker,
-                )
-            }
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                items(monitored.size, key = { monitored[it].id }) { index ->
-                    val session = monitored[index]
-                    val barColor = slotColors[index % slotColors.size]
-                    val rawPreview = monitorPreviews[session.id]
-                        ?: session.firstPrompt
-                        ?: "点击“在执行区打开”查看完整对话流"
-                    val preview = remember(rawPreview) { cleanMarkdownPreview(rawPreview) }
-
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(14.dp))
-                            .background(colors.card)
-                            .border(0.75.dp, colors.stroke, RoundedCornerShape(14.dp))
-                            .clickable { onOpenSession(session) }
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                            Box(
-                                Modifier
-                                    .width(4.dp)
-                                    .height(18.dp)
-                                    .clip(RoundedCornerShape(2.dp))
-                                    .background(barColor),
-                            )
-                            Text(
-                                session.resolvedTitle,
-                                fontSize = 14.5.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            val badgeColor = if (session.isRunning) Color(0xFFFF9500) else statusColor(session.status)
-                            Text(
-                                if (session.isRunning) "进行中" else session.status.title,
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = badgeColor,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(badgeColor.copy(0.15f))
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
-
-                        Text(
-                            preview,
-                            fontSize = 13.sp,
-                            lineHeight = 18.sp,
-                            color = colors.textSecondary,
-                            maxLines = 3,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(if (colors.isDark) colors.codeSurface else colors.bg)
-                                .padding(horizontal = 11.dp, vertical = 9.dp),
-                        )
-
-                        Row(
-                            Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            Row(
-                                Modifier.weight(1f),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                AgentAvatar(session.effectiveAgentKey, 14.dp)
-                                val metaText = buildString {
-                                    append(session.model?.takeIf { it.isNotBlank() } ?: session.agentDisplayLabel)
-                                    if (session.workspaceDisplayLabel.isNotBlank()) {
-                                        append(" · ")
-                                        append(session.workspaceDisplayLabel)
-                                    }
-                                }
-                                Text(
-                                    metaText,
-                                    fontSize = 11.5.sp,
-                                    color = colors.textSecondary,
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                            Text(
-                                "取消监控",
-                                fontSize = 12.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = colors.textSecondary,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .clickable { onRemoveMonitor(session) }
-                                    .padding(horizontal = 6.dp, vertical = 4.dp),
-                            )
-                            Row(
-                                Modifier
-                                    .clip(CircleShape)
-                                    .background(colors.accent)
-                                    .clickable { onOpenSession(session) }
-                                    .padding(horizontal = 11.dp, vertical = 5.5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
-                            ) {
-                                Icon(Icons.AutoMirrored.Rounded.OpenInNew, null, tint = Color.White, modifier = Modifier.size(12.dp))
-                                Text(
-                                    "在执行区打开",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = Color.White,
-                                    maxLines = 1,
-                                    softWrap = false,
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-private data class CanvasGroupBucket(
-    val id: String,
-    val title: String,
-    val icon: ImageVector,
-    val sessions: List<KanbanSessionSummary>,
-)
-
-@Composable
-private fun SessionHubCanvasView(
-    state: UiState,
-    projects: List<CatalogProject>,
-    activeSessions: List<KanbanSessionSummary>,
-    monitoredSessionIds: Set<String>,
-    canvasGrouping: String,
-    onCanvasGroupingChange: (String) -> Unit,
-    collapsedCanvasGroups: Set<String>,
-    onCollapsedCanvasGroupsChange: (Set<String>) -> Unit,
-    onOpenSession: (KanbanSessionSummary) -> Unit,
-    onStatusChange: (KanbanSessionSummary, KanbanSessionStatus) -> Unit,
-    onTogglePin: (KanbanSessionSummary) -> Unit,
-    onRequestRename: (KanbanSessionSummary) -> Unit,
-    onToggleMonitor: (KanbanSessionSummary) -> Unit,
-    onFork: (KanbanSessionSummary) -> Unit,
-    onCopyText: (String, String) -> Unit,
-    onRequestDelete: (KanbanSessionSummary) -> Unit,
-) {
-    val colors = VibexTheme.colors
-    val groups = remember(activeSessions, canvasGrouping, projects, state.catalog?.workspaces) {
-        when (canvasGrouping) {
-            CanvasGroupingMode.ByProject.id -> {
-                val wsToProject = mutableMapOf<String, CatalogProject>()
-                state.catalog?.workspaces.orEmpty().forEach { ws ->
-                    projects.find { it.id == ws.projectId }?.let { proj ->
-                        wsToProject[ws.id.lowercase()] = proj
-                    }
-                }
-                val buckets = linkedMapOf<String, Pair<String, MutableList<KanbanSessionSummary>>>()
-                for (s in activeSessions) {
-                    val proj = wsToProject[s.workspaceId.lowercase()]
-                    val key = proj?.id ?: "other"
-                    val title = proj?.name ?: "其他工作区"
-                    buckets.getOrPut(key) { title to mutableListOf() }.second.add(s)
-                }
-                buckets.map { (id, pair) ->
-                    CanvasGroupBucket(id, pair.first, Icons.Rounded.Folder, pair.second)
-                }.sortedByDescending { it.sessions.size }
-            }
-            CanvasGroupingMode.ByAgent.id -> {
-                activeSessions.groupBy { it.agentDisplayLabel }
-                    .map { (agentLabel, list) ->
-                        CanvasGroupBucket(agentLabel, agentLabel, Icons.Rounded.AutoAwesome, list)
-                    }
-                    .sortedByDescending { it.sessions.size }
-            }
-            else -> {
-                val nowMs = System.currentTimeMillis()
-                val today = mutableListOf<KanbanSessionSummary>()
-                val sevenDays = mutableListOf<KanbanSessionSummary>()
-                val older = mutableListOf<KanbanSessionSummary>()
-                for (s in activeSessions) {
-                    val epochMs = parseIsoMillis(s.updatedAt) ?: 0L
-                    val hours = (nowMs - epochMs) / 3_600_000.0
-                    when {
-                        hours <= 24.0 -> today.add(s)
-                        hours <= 24.0 * 7.0 -> sevenDays.add(s)
-                        else -> older.add(s)
-                    }
-                }
-                buildList {
-                    if (today.isNotEmpty()) add(CanvasGroupBucket("1d", "最近 1 天", Icons.Rounded.Schedule, today))
-                    if (sevenDays.isNotEmpty()) add(CanvasGroupBucket("7d", "最近 7 天", Icons.Rounded.CalendarToday, sevenDays))
-                    if (older.isNotEmpty()) add(CanvasGroupBucket("older", "更早之前", Icons.Rounded.Archive, older))
-                }
-            }
-        }
-    }
-
-    Column(Modifier.fillMaxSize()) {
-        Row(
-            Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Row(
-                Modifier
-                    .width(240.dp)
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(colors.segmentedTrack)
-                    .padding(2.dp),
-            ) {
-                CanvasGroupingMode.entries.forEach { mode ->
-                    val selected = canvasGrouping == mode.id
-                    Text(
-                        mode.title,
-                        fontSize = 12.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (selected) colors.textPrimary else colors.textSecondary,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .weight(1f)
-                            .then(
-                                if (selected) Modifier.shadow(1.5.dp, RoundedCornerShape(6.dp), ambientColor = Color.Black.copy(0.08f))
-                                else Modifier,
-                            )
-                            .clip(RoundedCornerShape(6.dp))
-                            .background(if (selected) colors.segmentedThumb else Color.Transparent)
-                            .clickable { onCanvasGroupingChange(mode.id) }
-                            .padding(vertical = 5.dp),
-                    )
-                }
-            }
-            Spacer(Modifier.weight(1f))
-            val allCollapsed = groups.isNotEmpty() && collapsedCanvasGroups.size == groups.size
-            Text(
-                if (allCollapsed) "全部展开" else "全部收起",
-                fontSize = 12.sp,
-                fontWeight = FontWeight.Medium,
-                color = colors.accent,
-                modifier = Modifier.clickable {
-                    onCollapsedCanvasGroupsChange(if (allCollapsed) emptySet() else groups.map { it.id }.toSet())
-                },
-            )
-        }
-
-        if (groups.isEmpty()) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                EmptyState(Icons.Rounded.DashboardCustomize, "画布是空的", "当前项目还没有活跃会话。")
-            }
-        } else {
-            LazyColumn(
-                contentPadding = PaddingValues(16.dp),
-                verticalArrangement = Arrangement.spacedBy(14.dp),
-            ) {
-                items(groups, key = { it.id }) { group ->
-                    val isCollapsed = group.id in collapsedCanvasGroups
-                    Column(
-                        Modifier
-                            .fillMaxWidth()
-                            .clip(RoundedCornerShape(16.dp))
-                            .background(if (colors.isDark) Color(0xFF161618) else Color(0xFFEAECEF).copy(alpha = 0.72f))
-                            .border(0.75.dp, colors.stroke, RoundedCornerShape(16.dp))
-                            .padding(14.dp),
-                        verticalArrangement = Arrangement.spacedBy(10.dp),
-                    ) {
-                        Row(
-                            Modifier
-                                .fillMaxWidth()
-                                .clickable {
-                                    onCollapsedCanvasGroupsChange(
-                                        if (isCollapsed) collapsedCanvasGroups - group.id
-                                        else collapsedCanvasGroups + group.id,
-                                    )
-                                },
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = if (isCollapsed) Icons.Rounded.ChevronRight else Icons.Rounded.ExpandMore,
-                                contentDescription = null,
-                                tint = colors.textSecondary,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            Icon(group.icon, null, tint = colors.accent, modifier = Modifier.size(16.dp))
-                            Text(
-                                group.title,
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.textPrimary,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                                modifier = Modifier.weight(1f),
-                            )
-                            Text(
-                                "${group.sessions.size} 个会话",
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.Medium,
-                                color = colors.textSecondary,
-                                maxLines = 1,
-                                softWrap = false,
-                                modifier = Modifier
-                                    .clip(CircleShape)
-                                    .background(colors.card)
-                                    .border(0.5.dp, colors.stroke, CircleShape)
-                                    .padding(horizontal = 8.dp, vertical = 3.dp),
-                            )
-                        }
-
-                        if (!isCollapsed) {
-                            group.sessions.forEach { session ->
-                                KanbanSessionItemCard(
-                                    session = session,
-                                    showStatusPill = true,
-                                    isMonitored = session.id in monitoredSessionIds,
-                                    onOpenSession = { onOpenSession(session) },
-                                    onStatusChange = { onStatusChange(session, it) },
-                                    onTogglePin = { onTogglePin(session) },
-                                    onRequestRename = { onRequestRename(session) },
-                                    onToggleMonitor = { onToggleMonitor(session) },
-                                    onFork = { onFork(session) },
-                                    onCopyText = onCopyText,
-                                    onRequestDelete = { onRequestDelete(session) },
-                                )
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-// ============================================================================
-// MARK: - 3. Usage Dashboard (`KanbanUsageDashboardView.swift` 1:1 Parity)
+// MARK: - 2. Usage Dashboard (`KanbanUsageDashboardView.swift` 1:1 Parity, <= 2 Rows)
 // ============================================================================
 
 private data class PlanAgentDescriptor(
@@ -2329,11 +805,21 @@ private val planAgentDescriptors = listOf(
     PlanAgentDescriptor("antigravity", "Antigravity 套餐", "读取设置里的 Antigravity 订阅凭据"),
 )
 
+private fun usageTabIcon(tab: UsageDashboardTab): ImageVector = when (tab) {
+    UsageDashboardTab.Overview -> Icons.Rounded.TrendingUp
+    UsageDashboardTab.Folders -> Icons.Rounded.Folder
+    UsageDashboardTab.Agents -> Icons.Rounded.Bolt
+    UsageDashboardTab.Models -> Icons.Rounded.Tag
+    UsageDashboardTab.Sessions -> Icons.AutoMirrored.Rounded.List
+    UsageDashboardTab.Plan -> Icons.Rounded.Inventory2
+}
+
 @Composable
 private fun KanbanUsageDashboardView(
     model: CompanionModel,
     projects: List<CatalogProject>,
     initialProjectId: String?,
+    refreshTrigger: Int = 0,
 ) {
     val colors = VibexTheme.colors
     val scope = rememberCoroutineScope()
@@ -2347,6 +833,7 @@ private fun KanbanUsageDashboardView(
     var isLoading by remember { mutableStateOf(false) }
     var errorMessage by remember { mutableStateOf<String?>(null) }
     var sessionSortByCost by rememberSaveable { mutableStateOf(true) }
+    var showTabMenu by remember { mutableStateOf(false) }
     var showTargetMenu by remember { mutableStateOf(false) }
 
     // Plan usage state
@@ -2385,6 +872,16 @@ private fun KanbanUsageDashboardView(
         }
     }
 
+    LaunchedEffect(refreshTrigger) {
+        if (refreshTrigger > 0) {
+            if (activeTab == UsageDashboardTab.Plan) {
+                loadPlanUsage(selectedPlanAgent.id, force = true)
+            } else {
+                reloadStatistics()
+            }
+        }
+    }
+
     val selectedTargetLabel = remember(selectedTarget, projects) {
         if (selectedTarget == "global") "全局"
         else {
@@ -2394,56 +891,117 @@ private fun KanbanUsageDashboardView(
     }
 
     Column(Modifier.fillMaxSize()) {
-        // Filter Header: Target Menu | Segmented Date Range (7天 / 30天 / 全部) | Refresh
+        // Row 2 (Unified Filter Row): Left [概览 ▾] + [全局 ▾] closely grouped (6.dp) | Right [7天 / 30天 / 全部]
         Row(
             Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
+                .padding(horizontal = 16.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(10.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
         ) {
-            Box {
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(colors.bgElevated)
-                        .clickable { showTargetMenu = true }
-                        .padding(horizontal = 10.dp, vertical = 6.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        imageVector = if (selectedTarget == "global") Icons.Rounded.Public else Icons.Rounded.Folder,
-                        contentDescription = null,
-                        tint = colors.accent,
-                        modifier = Modifier.size(14.dp),
-                    )
-                    Text(selectedTargetLabel, fontSize = 13.sp, fontWeight = FontWeight.Medium, color = colors.textPrimary, maxLines = 1)
-                    Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(14.dp))
-                }
-                DropdownMenu(expanded = showTargetMenu, onDismissRequest = { showTargetMenu = false }) {
-                    DropdownMenuItem(
-                        text = { Text("全局") },
-                        trailingIcon = if (selectedTarget == "global") {
-                            { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                        } else null,
-                        onClick = {
-                            showTargetMenu = false
-                            selectedTarget = "global"
-                        },
-                    )
-                    projects.forEach { project ->
-                        val target = "project:${project.id}"
-                        DropdownMenuItem(
-                            text = { Text(project.name) },
-                            trailingIcon = if (selectedTarget == target) {
-                                { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
-                            } else null,
-                            onClick = {
-                                showTargetMenu = false
-                                selectedTarget = target
-                            },
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                // 1. Dimension Dropdown (概览 / 目录 / Agent / 模型 / 会话 / 套餐)
+                Box {
+                    Row(
+                        Modifier
+                            .clip(CircleShape)
+                            .background(colors.bgElevated)
+                            .border(0.5.dp, colors.stroke, CircleShape)
+                            .clickable { showTabMenu = true }
+                            .padding(horizontal = 10.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Icon(
+                            imageVector = usageTabIcon(activeTab),
+                            contentDescription = null,
+                            tint = colors.accent,
+                            modifier = Modifier.size(13.dp),
                         )
+                        Text(
+                            activeTab.label,
+                            fontSize = 12.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.textPrimary,
+                            maxLines = 1,
+                        )
+                        Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(13.dp))
+                    }
+                    DropdownMenu(expanded = showTabMenu, onDismissRequest = { showTabMenu = false }) {
+                        UsageDashboardTab.entries.forEach { tab ->
+                            DropdownMenuItem(
+                                text = { Text(tab.label) },
+                                leadingIcon = { Icon(usageTabIcon(tab), null, modifier = Modifier.size(16.dp)) },
+                                trailingIcon = if (activeTab == tab) {
+                                    { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                                } else null,
+                                onClick = {
+                                    showTabMenu = false
+                                    activeTab = tab
+                                },
+                            )
+                        }
+                    }
+                }
+
+                // 2. Scope Dropdown (全局 / 项目) — Placed right next to 概览 ▾
+                if (activeTab != UsageDashboardTab.Plan) {
+                    Box {
+                        Row(
+                            Modifier
+                                .clip(CircleShape)
+                                .background(colors.bgElevated)
+                                .border(0.5.dp, colors.stroke, CircleShape)
+                                .clickable { showTargetMenu = true }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Icon(
+                                imageVector = if (selectedTarget == "global") Icons.Rounded.Public else Icons.Rounded.Folder,
+                                contentDescription = null,
+                                tint = colors.textSecondary,
+                                modifier = Modifier.size(13.dp),
+                            )
+                            Text(
+                                selectedTargetLabel,
+                                fontSize = 12.5.sp,
+                                fontWeight = FontWeight.Medium,
+                                color = colors.textPrimary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 88.dp),
+                            )
+                            Icon(Icons.Rounded.ExpandMore, null, tint = colors.textSecondary, modifier = Modifier.size(13.dp))
+                        }
+                        DropdownMenu(expanded = showTargetMenu, onDismissRequest = { showTargetMenu = false }) {
+                            DropdownMenuItem(
+                                text = { Text("全局") },
+                                trailingIcon = if (selectedTarget == "global") {
+                                    { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                                } else null,
+                                onClick = {
+                                    showTargetMenu = false
+                                    selectedTarget = "global"
+                                },
+                            )
+                            projects.forEach { project ->
+                                val target = "project:${project.id}"
+                                DropdownMenuItem(
+                                    text = { Text(project.name) },
+                                    trailingIcon = if (selectedTarget == target) {
+                                        { Icon(Icons.Rounded.Check, null, tint = colors.accent, modifier = Modifier.size(16.dp)) }
+                                    } else null,
+                                    onClick = {
+                                        showTargetMenu = false
+                                        selectedTarget = target
+                                    },
+                                )
+                            }
+                        }
                     }
                 }
             }
@@ -2453,7 +1011,7 @@ private fun KanbanUsageDashboardView(
             if (activeTab != UsageDashboardTab.Plan) {
                 Row(
                     Modifier
-                        .width(156.dp)
+                        .width(142.dp)
                         .clip(RoundedCornerShape(8.dp))
                         .background(colors.segmentedTrack)
                         .padding(2.dp),
@@ -2462,7 +1020,7 @@ private fun KanbanUsageDashboardView(
                         val selected = dateRange == range
                         Text(
                             range.label,
-                            fontSize = 12.sp,
+                            fontSize = 11.5.sp,
                             fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
                             color = if (selected) colors.textPrimary else colors.textSecondary,
                             textAlign = TextAlign.Center,
@@ -2478,72 +1036,6 @@ private fun KanbanUsageDashboardView(
                                 .padding(vertical = 5.dp),
                         )
                     }
-                }
-            }
-
-            Box(
-                Modifier
-                    .size(30.dp)
-                    .clip(CircleShape)
-                    .background(colors.bgElevated)
-                    .clickable {
-                        scope.launch {
-                            if (activeTab == UsageDashboardTab.Plan) {
-                                loadPlanUsage(selectedPlanAgent.id, force = true)
-                            } else {
-                                reloadStatistics()
-                            }
-                        }
-                    },
-                contentAlignment = Alignment.Center,
-            ) {
-                Icon(Icons.Rounded.Refresh, contentDescription = "刷新", tint = colors.textPrimary, modifier = Modifier.size(16.dp))
-            }
-        }
-
-        HorizontalDivider(color = colors.hairline)
-
-        // Sub-Tab Bar: 概览 | 目录 | Agent | 模型 | 会话 | 套餐
-        LazyRow(
-            contentPadding = PaddingValues(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            items(UsageDashboardTab.entries, key = { it.name }) { tab ->
-                val isSelected = activeTab == tab
-                val tabIcon = when (tab) {
-                    UsageDashboardTab.Overview -> Icons.Rounded.TrendingUp
-                    UsageDashboardTab.Folders -> Icons.Rounded.Folder
-                    UsageDashboardTab.Agents -> Icons.Rounded.Bolt
-                    UsageDashboardTab.Models -> Icons.Rounded.Tag
-                    UsageDashboardTab.Sessions -> Icons.AutoMirrored.Rounded.List
-                    UsageDashboardTab.Plan -> Icons.Rounded.Inventory2
-                }
-                Row(
-                    Modifier
-                        .clip(CircleShape)
-                        .background(if (isSelected) colors.accent.copy(alpha = 0.14f) else colors.card)
-                        .border(
-                            width = 0.75.dp,
-                            color = if (isSelected) colors.accent.copy(alpha = 0.45f) else colors.stroke,
-                            shape = CircleShape,
-                        )
-                        .clickable { activeTab = tab }
-                        .padding(horizontal = 12.dp, vertical = 7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Icon(
-                        tabIcon,
-                        contentDescription = null,
-                        tint = if (isSelected) colors.accent else colors.textSecondary,
-                        modifier = Modifier.size(13.dp),
-                    )
-                    Text(
-                        tab.label,
-                        fontSize = 13.sp,
-                        fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Medium,
-                        color = if (isSelected) colors.accent else colors.textPrimary,
-                    )
                 }
             }
         }
@@ -3153,12 +1645,10 @@ private fun UsageMetricCard(
 private fun KanbanSessionItemCard(
     session: KanbanSessionSummary,
     showStatusPill: Boolean,
-    isMonitored: Boolean,
     onOpenSession: () -> Unit,
     onStatusChange: (KanbanSessionStatus) -> Unit,
     onTogglePin: () -> Unit,
     onRequestRename: () -> Unit,
-    onToggleMonitor: () -> Unit,
     onFork: () -> Unit,
     onCopyText: (String, String) -> Unit,
     onRequestDelete: () -> Unit,
@@ -3230,12 +1720,10 @@ private fun KanbanSessionItemCard(
                         expanded = showMenu,
                         onDismiss = { showMenu = false },
                         session = session,
-                        isMonitored = isMonitored,
                         onOpenSession = onOpenSession,
                         onStatusChange = onStatusChange,
                         onTogglePin = onTogglePin,
                         onRequestRename = onRequestRename,
-                        onToggleMonitor = onToggleMonitor,
                         onFork = onFork,
                         onCopyText = onCopyText,
                         onRequestDelete = onRequestDelete,
@@ -3332,12 +1820,10 @@ private fun KanbanSessionContextMenu(
     expanded: Boolean,
     onDismiss: () -> Unit,
     session: KanbanSessionSummary,
-    isMonitored: Boolean,
     onOpenSession: () -> Unit,
     onStatusChange: (KanbanSessionStatus) -> Unit,
     onTogglePin: () -> Unit,
     onRequestRename: () -> Unit,
-    onToggleMonitor: () -> Unit,
     onFork: () -> Unit,
     onCopyText: (String, String) -> Unit,
     onRequestDelete: () -> Unit,
@@ -3380,20 +1866,6 @@ private fun KanbanSessionContextMenu(
                 onRequestRename()
             },
         )
-        DropdownMenuItem(
-            text = { Text(if (isMonitored) "取消监控" else "加入监控区") },
-            leadingIcon = {
-                Icon(
-                    if (isMonitored) Icons.Rounded.VisibilityOff else Icons.Rounded.Visibility,
-                    null,
-                    modifier = Modifier.size(16.dp),
-                )
-            },
-            onClick = {
-                onDismiss()
-                onToggleMonitor()
-            },
-        )
         if (session.isForkSupported) {
             DropdownMenuItem(
                 text = { Text("从本会话 Fork") },
@@ -3423,7 +1895,7 @@ private fun KanbanSessionContextMenu(
         HorizontalDivider()
         if (session.isArchived) {
             DropdownMenuItem(
-                text = { Text("移至会话列表") },
+                text = { Text("移至待办") },
                 leadingIcon = { Icon(Icons.Rounded.Unarchive, null, modifier = Modifier.size(16.dp)) },
                 onClick = {
                     onDismiss()

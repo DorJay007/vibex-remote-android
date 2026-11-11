@@ -3,6 +3,9 @@ package dev.vibex.companion.app.ui
 import android.os.Build
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.ContentTransform
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -16,6 +19,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -180,42 +184,36 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
         )
     }
 
-    if (isPairModal) {
-        GlowBackground {
-            OnboardingScreen(
-                state = state,
-                model = model,
-                onScan = launchScanner,
-                onDismiss = { model.go(Route.Conversations) },
-            )
-        }
-        return
-    }
+    // The tab shell keeps showing the page it was on while a conversation or the pairing
+    // sheet slides over it, so the page underneath never changes mid-transition.
+    val tabRouteHolder = remember { TabRouteHolder() }
+    if (!fullscreen && !isPairModal) tabRouteHolder.route = state.route
+    val tabRoute = tabRouteHolder.route
 
     val tabs = listOf(
         LiquidTab(
             "对话",
             Icons.Outlined.ChatBubbleOutline,
             Icons.Rounded.ChatBubble,
-            state.route is Route.Conversations || state.route is Route.Timeline || state.route is Route.Folders,
+            tabRoute is Route.Conversations || tabRoute is Route.Folders,
         ) { model.go(Route.Conversations) },
         LiquidTab(
             "看板",
             Icons.Outlined.GridView,
             Icons.Rounded.GridView,
-            state.route is Route.Status,
+            tabRoute is Route.Status,
         ) { model.go(Route.Status) },
         LiquidTab(
             "协作空间",
             Icons.Outlined.Groups,
             Icons.Rounded.Groups,
-            state.route is Route.Collaboration,
+            tabRoute is Route.Collaboration,
         ) { model.go(Route.Collaboration) },
         LiquidTab(
             "设置",
             Icons.Outlined.Settings,
             Icons.Rounded.Settings,
-            state.route is Route.Settings,
+            tabRoute is Route.Settings,
         ) { model.go(Route.Settings()) },
     )
 
@@ -224,90 +222,167 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
     val manualConnectNeeded = hasServer && !state.autoConnect && state.connection == ConnectionState.Offline
     val showConnectGate = !hasServer || authExpired || manualConnectNeeded
 
+    val hostNotices: @Composable () -> Unit = {
+        state.error?.let { HostBanner(it, hostBannerSeverity(it)) { model.dismissNotice() } }
+        state.notice?.let { HostBanner(it, NoticeSeverity.Info) { model.dismissNotice() } }
+    }
+    val requiresServer: @Composable (@Composable () -> Unit) -> Unit = { content ->
+        if (showConnectGate) {
+            RequiresServerView(
+                state = state,
+                model = model,
+                authExpired = authExpired,
+                onScan = launchScanner,
+                onManualPair = { model.go(Route.ManualPair) },
+            )
+        } else {
+            content()
+        }
+    }
+
+    val layer = when (val route = state.route) {
+        Route.Onboarding, Route.ManualPair -> ShellLayer.Pairing
+        is Route.Timeline -> ShellLayer.Conversation(route.conversationId)
+        else -> ShellLayer.Tabs
+    }
+
     GlowBackground {
-        Column(Modifier.fillMaxSize()) {
-            Column(
-                Modifier
-                    .weight(1f)
-                    .fillMaxWidth()
-                    .statusBarsPadding(),
-            ) {
-                state.error?.let { HostBanner(it, hostBannerSeverity(it)) { model.dismissNotice() } }
-                state.notice?.let { HostBanner(it, NoticeSeverity.Info) { model.dismissNotice() } }
-                when (val route = state.route) {
-                    is Route.Settings -> SettingsScreen(
-                        state = state,
-                        model = model,
-                        section = route.section,
-                        onOpen = { model.go(Route.Settings(it)) },
-                        onBack = { model.go(Route.Settings()) },
-                        onScan = launchScanner,
-                        onManualPair = { model.go(Route.ManualPair) },
-                    )
-                    Route.Folders -> if (showConnectGate) {
-                        RequiresServerView(
-                            state = state,
-                            model = model,
-                            authExpired = authExpired,
-                            onScan = launchScanner,
-                            onManualPair = { model.go(Route.ManualPair) },
-                        )
-                    } else {
-                        FoldersScreen(state, model)
+        AnimatedContent(
+            targetState = layer,
+            transitionSpec = { layerTransition(initialState, targetState) },
+            modifier = Modifier.fillMaxSize(),
+            label = "shellLayer",
+        ) { shownLayer ->
+            when (shownLayer) {
+                ShellLayer.Pairing -> OnboardingScreen(
+                    state = state,
+                    model = model,
+                    onScan = launchScanner,
+                    onDismiss = { model.go(Route.Conversations) },
+                )
+                is ShellLayer.Conversation -> Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(colors.bg)
+                        .statusBarsPadding(),
+                ) {
+                    TimelinePane(state, model, shownLayer.conversationId)
+                    Column(Modifier.align(Alignment.TopCenter)) {
+                        hostNotices()
                     }
-                    Route.Status -> if (showConnectGate) {
-                        RequiresServerView(
-                            state = state,
-                            model = model,
-                            authExpired = authExpired,
-                            onScan = launchScanner,
-                            onManualPair = { model.go(Route.ManualPair) },
-                        )
-                    } else {
-                        StatusScreen(state, model)
-                    }
-                    Route.Collaboration -> if (showConnectGate) {
-                        RequiresServerView(
-                            state = state,
-                            model = model,
-                            authExpired = authExpired,
-                            onScan = launchScanner,
-                            onManualPair = { model.go(Route.ManualPair) },
-                        )
-                    } else {
-                        CollaborationScreen(
-                            state = state,
-                            model = model,
-                            onChatOpenChange = { isCollabChatOpen = it },
-                        )
-                    }
-                    is Route.Timeline -> TimelinePane(state, model, route.conversationId)
-                    else -> if (showConnectGate) {
-                        RequiresServerView(
-                            state = state,
-                            model = model,
-                            authExpired = authExpired,
-                            onScan = launchScanner,
-                            onManualPair = { model.go(Route.ManualPair) },
-                        )
-                    } else {
-                        ConversationList(
-                            state = state,
-                            model = model,
-                            onChromeHiddenChange = { isConversationsChromeHidden = it },
-                        )
+                }
+                ShellLayer.Tabs -> {
+                    val pageCoversBottomBar = inCollabChat ||
+                        (tabRoute is Route.Collaboration && isCollabChatOpen) ||
+                        (tabRoute is Route.Conversations && isConversationsChromeHidden)
+                    val showFloatingNavBar = !isKeyboardVisible && !pageCoversBottomBar
+
+                    Box(Modifier.fillMaxSize().background(colors.bg)) {
+                        Column(
+                            Modifier
+                                .fillMaxSize()
+                                .statusBarsPadding()
+                                .navigationBarsPadding()
+                                .padding(bottom = if (showFloatingNavBar) 66.dp else 0.dp),
+                        ) {
+                            AnimatedContent(
+                                targetState = tabRoute,
+                                transitionSpec = { tabTransition(initialState, targetState) },
+                                modifier = Modifier.fillMaxSize(),
+                                label = "tabRoute",
+                            ) { route ->
+                                Box(Modifier.fillMaxSize().background(colors.bg)) {
+                                    when (route) {
+                                        is Route.Settings -> SettingsScreen(
+                                            state = state,
+                                            model = model,
+                                            section = route.section,
+                                            onOpen = { model.go(Route.Settings(it)) },
+                                            onBack = { model.go(Route.Settings()) },
+                                            onScan = launchScanner,
+                                            onManualPair = { model.go(Route.ManualPair) },
+                                        )
+                                        Route.Folders -> requiresServer { FoldersScreen(state, model) }
+                                        Route.Status -> requiresServer { StatusScreen(state, model) }
+                                        Route.Collaboration -> requiresServer {
+                                            CollaborationScreen(
+                                                state = state,
+                                                model = model,
+                                                onChatOpenChange = { isCollabChatOpen = it },
+                                            )
+                                        }
+                                        else -> requiresServer {
+                                            ConversationList(
+                                                state = state,
+                                                model = model,
+                                                onChromeHiddenChange = { isConversationsChromeHidden = it },
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Column(
+                            Modifier
+                                .align(Alignment.TopCenter)
+                                .statusBarsPadding(),
+                        ) {
+                            hostNotices()
+                        }
+                        if (!isKeyboardVisible) {
+                            AnimatedVisibility(
+                                visible = !pageCoversBottomBar,
+                                enter = NavMotion.bottomBarEnter,
+                                exit = NavMotion.bottomBarExit,
+                                modifier = Modifier.align(Alignment.BottomCenter),
+                            ) {
+                                LiquidNavBar(tabs = tabs)
+                            }
+                        }
                     }
                 }
             }
-            val hideBottomBar = fullscreen ||
-                inCollabChat ||
-                (state.route is Route.Collaboration && isCollabChatOpen) ||
-                (state.route is Route.Conversations && isConversationsChromeHidden) ||
-                isKeyboardVisible
-            if (!hideBottomBar) {
-                LiquidNavBar(tabs = tabs)
-            }
         }
+    }
+}
+
+private class TabRouteHolder {
+    var route: Route = Route.Conversations
+}
+
+private sealed interface ShellLayer {
+    val elevation: Float
+
+    data object Tabs : ShellLayer {
+        override val elevation = 0f
+    }
+
+    data class Conversation(val conversationId: String) : ShellLayer {
+        override val elevation = 1f
+    }
+
+    data object Pairing : ShellLayer {
+        override val elevation = 2f
+    }
+}
+
+private fun layerTransition(from: ShellLayer, to: ShellLayer): ContentTransform = when {
+    to is ShellLayer.Pairing -> NavMotion.present(to.elevation)
+    from is ShellLayer.Pairing -> NavMotion.dismiss(to.elevation)
+    to.elevation > from.elevation -> NavMotion.push(to.elevation)
+    to.elevation < from.elevation -> NavMotion.pop(to.elevation)
+    else -> NavMotion.crossfade(to.elevation)
+}
+
+private val Route.settingsDepth: Float
+    get() = if (this is Route.Settings && section != null) 1f else 0f
+
+private fun tabTransition(from: Route, to: Route): ContentTransform {
+    val withinSettings = from is Route.Settings && to is Route.Settings
+    return when {
+        withinSettings && to.settingsDepth > from.settingsDepth -> NavMotion.push(to.settingsDepth)
+        withinSettings && to.settingsDepth < from.settingsDepth -> NavMotion.pop(to.settingsDepth)
+        else -> NavMotion.crossfade(to.settingsDepth)
     }
 }
 
@@ -522,21 +597,30 @@ fun RequiresServerView(
                         ) {
                             Text(
                                 if (state.discoveringHosts) {
-                                    if (isLan) "正在扫描同一 Wi-Fi 下的电脑…" else "正在通过云服务搜索电脑…"
+                                    if (isLan) "正在扫描同一 Wi-Fi 下的电脑…" else "正在检测本机已配对的云端电脑…"
                                 } else {
-                                    if (isLan) "当前 Wi-Fi 未发现电脑" else "未在云服务发现电脑"
+                                    if (isLan) "当前 Wi-Fi 未发现电脑" else "云服务仅展示本机已配对过的电脑"
                                 },
                                 fontSize = 13.sp,
                                 color = colors.textSecondary,
                             )
-                            if (!state.discoveringHosts && isLan) {
-                                Text(
-                                    "跨网络或未扫到？点击切换至「云服务 Beta」",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = colors.accent,
-                                    modifier = Modifier.clickable { model.selectDiscoveryMode("cloud") },
-                                )
+                            if (!state.discoveringHosts) {
+                                if (isLan) {
+                                    Text(
+                                        "跨网络或未扫到？点击切换至「云服务 Beta」",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = colors.accent,
+                                        modifier = Modifier.clickable { model.selectDiscoveryMode("cloud") },
+                                    )
+                                } else {
+                                    Text(
+                                        "首次跨网配对请使用下方「扫码配对」或输入 8 位连接码",
+                                        fontSize = 11.5.sp,
+                                        color = colors.textTertiary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
                             }
                         }
                     }

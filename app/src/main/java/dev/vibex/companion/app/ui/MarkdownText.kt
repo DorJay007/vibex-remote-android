@@ -424,8 +424,10 @@ private fun parseInline(
                 if (end > i) {
                     flush()
                     val code = raw.substring(i + 1, end)
-                    builder.withStyle(SpanStyle(fontFamily = PlexMono, background = codeBg, color = codeColor)) {
-                        append(" $code ")
+                    val badge = resourceBadgePrefix(code, code) ?: ""
+                    val decorated = if (badge.isNotEmpty() && !code.startsWith(badge)) "$badge$code" else code
+                    builder.withStyle(SpanStyle(fontFamily = PlexMono, fontWeight = FontWeight.Medium, background = codeBg, color = codeColor)) {
+                        append(" $decorated ")
                     }
                     i = end + 1
                 } else {
@@ -476,8 +478,17 @@ private fun parseInline(
                 if (close > i && openParen >= 0 && closeParen > openParen) {
                     flush()
                     val label = raw.substring(i + 1, close)
-                    builder.withStyle(SpanStyle(color = linkColor, fontWeight = FontWeight.Medium)) {
-                        parseInline(this, label, linkColor, codeBg, codeColor)
+                    val href = raw.substring(openParen + 1, closeParen)
+                    if (looksLikeWorkspaceResource(label) || looksLikeWorkspaceResource(href)) {
+                        val badge = resourceBadgePrefix(label, href) ?: ""
+                        val decorated = if (badge.isNotEmpty() && !label.startsWith(badge)) "$badge$label" else label
+                        builder.withStyle(SpanStyle(fontFamily = PlexMono, fontWeight = FontWeight.SemiBold, background = codeBg, color = codeColor)) {
+                            append(" $decorated ")
+                        }
+                    } else {
+                        builder.withStyle(SpanStyle(color = linkColor, fontWeight = FontWeight.Medium)) {
+                            parseInline(this, label, linkColor, codeBg, codeColor)
+                        }
                     }
                     i = closeParen + 1
                 } else {
@@ -488,4 +499,43 @@ private fun parseInline(
         }
     }
     flush()
+}
+
+private val AdrRegex = Regex("^ADR-\\d+$", RegexOption.IGNORE_CASE)
+private val ResourceExts = listOf(
+    ".swift", ".ts", ".tsx", ".rs", ".kt", ".js", ".jsx",
+    ".json", ".md", ".css", ".py", ".go", ".toml", ".yaml", ".yml", ".html",
+)
+
+private fun resourceBadgePrefix(label: String, href: String): String? {
+    val cleanLabel = label.trim().removeSurrounding("`")
+    val upper = cleanLabel.uppercase()
+    val lowerHref = href.trim().lowercase()
+    if (upper == "README" || upper.startsWith("README.") || lowerHref.endsWith("/readme.md") || lowerHref == "readme.md") {
+        return "ⓘ "
+    }
+    if (AdrRegex.matches(upper) || cleanLabel.lowercase().endsWith(".md") || lowerHref.endsWith(".md")) {
+        return "M↓ "
+    }
+    if (cleanLabel.endsWith("/") && !cleanLabel.contains(" ") && cleanLabel.length > 2) {
+        return "📁 "
+    }
+    return null
+}
+
+private fun looksLikeWorkspaceResource(candidate: String): Boolean {
+    val stripped = candidate
+        .removePrefix("ⓘ ")
+        .removePrefix("M↓ ")
+        .removePrefix("📁 ")
+        .trim()
+        .removeSurrounding("`")
+    if (stripped.isEmpty() || stripped.contains(" ")) return false
+    val upper = stripped.uppercase()
+    if (upper == "README" || AdrRegex.matches(upper)) return true
+    if (stripped.endsWith("/") || stripped.startsWith("/") || stripped.startsWith("./") || stripped.contains("/")) {
+        return !stripped.startsWith("http://") && !stripped.startsWith("https://")
+    }
+    val lower = stripped.lowercase()
+    return ResourceExts.any { lower.endsWith(it) }
 }

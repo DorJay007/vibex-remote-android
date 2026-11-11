@@ -273,22 +273,31 @@ fun OnboardingScreen(
                             Text(
                                 if (state.discoveringHosts) {
                                     if (isLan) "正在扫描同一局域网内在线的 VibeX 电脑…"
-                                    else "正在通过云服务搜索在线电脑…"
+                                    else "正在检测本机已配对的云端电脑…"
                                 } else {
                                     if (isLan) "当前 Wi-Fi 未发现电脑"
-                                    else "未在云服务发现电脑，请确认电脑端在线"
+                                    else "云服务仅展示本机已配对过的电脑"
                                 },
                                 fontSize = 12.5.sp,
                                 color = colors.textSecondary,
                             )
-                            if (!state.discoveringHosts && isLan) {
-                                Text(
-                                    "跨网络或未扫到？点击切换至「云服务 Beta」",
-                                    fontSize = 12.sp,
-                                    fontWeight = FontWeight.Medium,
-                                    color = colors.accent,
-                                    modifier = Modifier.clickable { model.selectDiscoveryMode("cloud") },
-                                )
+                            if (!state.discoveringHosts) {
+                                if (isLan) {
+                                    Text(
+                                        "跨网络或未扫到？点击切换至「云服务 Beta」",
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Medium,
+                                        color = colors.accent,
+                                        modifier = Modifier.clickable { model.selectDiscoveryMode("cloud") },
+                                    )
+                                } else {
+                                    Text(
+                                        "首次跨网配对请使用下方「扫码配对」或输入 8 位连接码",
+                                        fontSize = 11.5.sp,
+                                        color = colors.textTertiary,
+                                        textAlign = TextAlign.Center,
+                                    )
+                                }
                             }
                         }
                     } else {

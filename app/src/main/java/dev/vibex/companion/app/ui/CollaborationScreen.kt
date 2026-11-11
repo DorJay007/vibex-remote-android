@@ -1,6 +1,10 @@
 package dev.vibex.companion.app.ui
 
 import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
@@ -98,7 +102,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
@@ -133,9 +139,8 @@ import kotlinx.coroutines.launch
 import java.time.Instant
 
 private enum class CollabTab(val title: String) {
+    Primary("主要"),
     All("全部"),
-    Groups("群组"),
-    Direct("助手"),
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -148,7 +153,7 @@ fun CollaborationScreen(
     val c = VibexTheme.colors
     val scope = rememberCoroutineScope()
 
-    var selectedTab by remember { mutableStateOf(CollabTab.All) }
+    var selectedTab by remember { mutableStateOf(CollabTab.Primary) }
     var searchText by remember { mutableStateOf("") }
     var sidebarItems by remember { mutableStateOf<List<CollabSidebarItem>>(emptyList()) }
     var contactGroups by remember { mutableStateOf<List<CollabContactGroup>>(emptyList()) }
@@ -214,48 +219,27 @@ fun CollaborationScreen(
         }
     }
 
-    if (activeChatItem != null) {
-        val currentItem = activeChatItem!!
-        val spaceSummary = spaces.firstOrNull { it.spaceId == currentItem.targetSpaceId }
-        val directAssistants = remember(sidebarItems) {
-            sidebarItems.filter { !it.isGroup }
-        }
-        CollaborationChatView(
-            state = state,
-            model = model,
-            item = currentItem,
-            spaceSummary = spaceSummary,
-            workspaceId = activeWorkspaceId,
-            directAssistants = directAssistants,
-            onBack = {
-                activeChatItem = null
-                refresh(silent = true)
-            },
-            onOpenConversation = { convId ->
-                activeChatItem = null
-                model.openConversation(convId)
-            },
-            onMutated = { refresh(silent = true) },
-            onDeleteGroupDone = {
-                activeChatItem = null
-                refresh(silent = false)
-            },
-        )
-        return
-    }
-
     val filteredItems = remember(sidebarItems, selectedTab, searchText) {
         val q = searchText.trim().lowercase()
-        sidebarItems.filter { item ->
-            val tabMatch = when (selectedTab) {
-                CollabTab.All -> true
-                CollabTab.Groups -> item.isGroup
-                CollabTab.Direct -> !item.isGroup
+        val basePool = when (selectedTab) {
+            CollabTab.All -> sidebarItems
+            CollabTab.Primary -> {
+                val primary = sidebarItems.filter { item ->
+                    item.isGroup ||
+                        item.member?.isSupervisor == true ||
+                        item.unreadCount > 0 ||
+                        item.lastMessage != null
+                }
+                if (primary.isEmpty()) sidebarItems else primary
             }
-            if (!tabMatch) return@filter false
-            if (q.isEmpty()) return@filter true
-            item.displayName.lowercase().contains(q) ||
-                item.lastMessage?.preview?.lowercase()?.contains(q) == true
+        }
+        if (q.isEmpty()) {
+            basePool
+        } else {
+            basePool.filter { item ->
+                item.displayName.lowercase().contains(q) ||
+                    item.lastMessage?.preview?.lowercase()?.contains(q) == true
+            }
         }
     }
 
@@ -269,421 +253,352 @@ fun CollaborationScreen(
         filteredItems.filter { !it.isGroup && it.id != supervisorItem?.id }
     }
 
-    Column(
-        modifier = Modifier
-            .fillMaxSize()
-            .background(c.bg),
-    ) {
-        // Top Header Bar (Project Selector | 协作空间 | + Menu)
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 10.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            Box {
-                Surface(
-                    onClick = { showProjectMenu = true },
-                    shape = RoundedCornerShape(50),
-                    color = c.bgElevated,
-                    border = BorderStroke(0.5.dp, c.stroke),
-                ) {
-                    Row(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                    ) {
-                        Icon(Icons.Outlined.Folder, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(13.dp))
-                        Text(
-                            text = activeProject?.name ?: "项目",
-                            color = c.textPrimary,
-                            fontSize = 13.sp,
-                            fontWeight = FontWeight.SemiBold,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                            modifier = Modifier.widthIn(max = 120.dp),
-                        )
-                        Icon(Icons.Outlined.UnfoldMore, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(12.dp))
-                    }
-                }
-                DropdownMenu(
-                    expanded = showProjectMenu,
-                    onDismissRequest = { showProjectMenu = false },
-                ) {
-                    state.catalog?.projects.orEmpty().forEach { project ->
-                        DropdownMenuItem(
-                            text = { Text(project.name) },
-                            trailingIcon = {
-                                if (state.selectedProjectId == project.id) {
-                                    Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp))
-                                }
-                            },
-                            onClick = {
-                                showProjectMenu = false
-                                model.selectProjectInPlace(project.id)
-                            },
-                        )
-                    }
-                }
-            }
-
-            Text(
-                text = "协作空间",
-                color = c.textPrimary,
-                fontSize = 17.sp,
-                fontWeight = FontWeight.SemiBold,
-                modifier = Modifier.weight(1f),
-                textAlign = TextAlign.Center,
-            )
-
-            Box {
-                Surface(
-                    onClick = { showAddMenu = true },
-                    shape = CircleShape,
-                    color = c.bgElevated,
-                    border = BorderStroke(0.5.dp, c.stroke),
-                    modifier = Modifier.size(32.dp),
-                ) {
-                    Box(contentAlignment = Alignment.Center) {
-                        Icon(Icons.Outlined.Add, contentDescription = "新建", tint = c.textPrimary, modifier = Modifier.size(17.dp))
-                    }
-                }
-                DropdownMenu(
-                    expanded = showAddMenu,
-                    onDismissRequest = { showAddMenu = false },
-                ) {
-                    DropdownMenuItem(
-                        text = { Text("新建助手") },
-                        leadingIcon = { Icon(Icons.Outlined.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        onClick = {
-                            showAddMenu = false
-                            showCreateAssistantSheet = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("新建群组") },
-                        leadingIcon = { Icon(Icons.Outlined.Groups, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        onClick = {
-                            showAddMenu = false
-                            newGroupName = ""
-                            showCreateGroupAlert = true
-                        },
-                    )
-                    DropdownMenuItem(
-                        text = { Text("新建联系人分组") },
-                        leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        onClick = {
-                            showAddMenu = false
-                            newContactGroupName = ""
-                            showCreateContactGroupAlert = true
-                        },
-                    )
-                    HorizontalDivider()
-                    DropdownMenuItem(
-                        text = { Text("角色与团队管理") },
-                        leadingIcon = { Icon(Icons.Outlined.Shield, contentDescription = null, modifier = Modifier.size(18.dp)) },
-                        onClick = {
-                            showAddMenu = false
-                            showRolesAndTeamsSheet = true
-                        },
-                    )
-                }
-            }
-        }
-
-        // Filter Bar: Search + Segmented Picker (全部 | 群组 | 助手)
+    Box(Modifier.fillMaxSize()) {
         Column(
             modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp)
-                .padding(bottom = 10.dp),
-            verticalArrangement = Arrangement.spacedBy(10.dp),
+                .fillMaxSize()
+                .background(c.bg)
+                // The list stays composed under an open chat; keep it out of TalkBack's reach.
+                .then(if (activeChatItem != null) Modifier.clearAndSetSemantics { } else Modifier),
         ) {
-            Row(
+            // Top Header Bar (Project Selector | 协作空间 | + Menu) — Strictly Centered Title
+            Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .clip(RoundedCornerShape(10.dp))
-                    .background(c.bgElevated)
-                    .padding(horizontal = 12.dp, vertical = 9.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    .padding(horizontal = 16.dp, vertical = 10.dp),
             ) {
-                Icon(Icons.Outlined.Search, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(15.dp))
-                Box(modifier = Modifier.weight(1f)) {
-                    if (searchText.isEmpty()) {
-                        Text("搜索群组或助手…", color = c.textSecondary, fontSize = 14.sp)
-                    }
-                    BasicTextField(
-                        value = searchText,
-                        onValueChange = { searchText = it },
-                        singleLine = true,
-                        textStyle = TextStyle(color = c.textPrimary, fontSize = 14.sp),
-                        cursorBrush = SolidColor(c.accent),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                }
-                if (searchText.isNotEmpty()) {
-                    Icon(
-                        Icons.Outlined.Close,
-                        contentDescription = "清除",
-                        tint = c.textSecondary,
-                        modifier = Modifier
-                            .size(16.dp)
-                            .clickable { searchText = "" },
-                    )
-                }
-            }
-
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(9.dp))
-                    .background(c.segmentedTrack)
-                    .padding(3.dp),
-            ) {
-                CollabTab.entries.forEach { tab ->
-                    val selected = selectedTab == tab
-                    Text(
-                        text = tab.title,
-                        color = if (selected) c.textPrimary else c.textSecondary,
-                        fontSize = 13.sp,
-                        fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
-                        textAlign = TextAlign.Center,
-                        modifier = Modifier
-                            .weight(1f)
-                            .then(
-                                if (selected) Modifier.shadow(1.5.dp, RoundedCornerShape(7.dp), ambientColor = Color.Black.copy(alpha = 0.08f))
-                                else Modifier,
+                Box(modifier = Modifier.align(Alignment.CenterStart)) {
+                    Surface(
+                        onClick = { showProjectMenu = true },
+                        shape = RoundedCornerShape(50),
+                        color = c.bgElevated,
+                        border = BorderStroke(0.5.dp, c.stroke),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Icon(Icons.Outlined.Folder, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(13.dp))
+                            Text(
+                                text = activeProject?.name ?: "项目",
+                                color = c.textPrimary,
+                                fontSize = 13.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.widthIn(max = 110.dp),
                             )
-                            .clip(RoundedCornerShape(7.dp))
-                            .background(if (selected) c.segmentedThumb else Color.Transparent)
-                            .clickable { selectedTab = tab }
-                            .padding(vertical = 6.dp),
-                    )
+                            Icon(Icons.Outlined.UnfoldMore, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(12.dp))
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = showProjectMenu,
+                        onDismissRequest = { showProjectMenu = false },
+                    ) {
+                        state.catalog?.projects.orEmpty().forEach { project ->
+                            DropdownMenuItem(
+                                text = { Text(project.name) },
+                                trailingIcon = {
+                                    if (state.selectedProjectId == project.id) {
+                                        Icon(Icons.Outlined.Check, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    }
+                                },
+                                onClick = {
+                                    showProjectMenu = false
+                                    model.selectProjectInPlace(project.id)
+                                },
+                            )
+                        }
+                    }
+                }
+
+                Text(
+                    text = "协作空间",
+                    color = c.textPrimary,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.align(Alignment.Center),
+                    textAlign = TextAlign.Center,
+                )
+
+                Box(modifier = Modifier.align(Alignment.CenterEnd)) {
+                    Surface(
+                        onClick = { showAddMenu = true },
+                        shape = CircleShape,
+                        color = c.bgElevated,
+                        border = BorderStroke(0.5.dp, c.stroke),
+                        modifier = Modifier.size(32.dp),
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Icon(Icons.Outlined.Add, contentDescription = "新建", tint = c.textPrimary, modifier = Modifier.size(17.dp))
+                        }
+                    }
+                    DropdownMenu(
+                        expanded = showAddMenu,
+                        onDismissRequest = { showAddMenu = false },
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("新建助手") },
+                            leadingIcon = { Icon(Icons.Outlined.SmartToy, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                showAddMenu = false
+                                showCreateAssistantSheet = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("新建群组") },
+                            leadingIcon = { Icon(Icons.Outlined.Groups, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                showAddMenu = false
+                                newGroupName = ""
+                                showCreateGroupAlert = true
+                            },
+                        )
+                        DropdownMenuItem(
+                            text = { Text("新建联系人分组") },
+                            leadingIcon = { Icon(Icons.Outlined.CreateNewFolder, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                showAddMenu = false
+                                newContactGroupName = ""
+                                showCreateContactGroupAlert = true
+                            },
+                        )
+                        HorizontalDivider()
+                        DropdownMenuItem(
+                            text = { Text("角色与团队管理") },
+                            leadingIcon = { Icon(Icons.Outlined.Shield, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                            onClick = {
+                                showAddMenu = false
+                                showRolesAndTeamsSheet = true
+                            },
+                        )
+                    }
                 }
             }
-        }
 
-        // Content List
-        if (loading && sidebarItems.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-            }
-        } else if (filteredItems.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(
-                    horizontalAlignment = Alignment.CenterHorizontally,
-                    verticalArrangement = Arrangement.spacedBy(10.dp),
+            // Centered Segmented Switcher (主要 | 全部) + Search Bar
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 10.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .width(196.dp)
+                        .clip(RoundedCornerShape(9.dp))
+                        .background(c.segmentedTrack)
+                        .padding(3.dp),
                 ) {
-                    Icon(Icons.Outlined.Groups, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(36.dp))
-                    Text("暂无协作空间或助手", color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
-                    Text("点击右上角 + 创建你的第一个助手或协作群组", color = c.textSecondary, fontSize = 13.sp)
-                }
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.fillMaxSize(),
-                contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 32.dp),
-                verticalArrangement = Arrangement.spacedBy(12.dp),
-            ) {
-                // Supervisor Slot
-                if (supervisorItem != null) {
-                    item(key = "section_supervisor") {
-                        CollabSectionCard(title = "主管") {
-                            CollabContactRow(
-                                item = supervisorItem,
-                                isSupervisorSlot = true,
-                                contactGroups = contactGroups,
-                                onClick = { activeChatItem = supervisorItem },
-                                onMarkRead = { read ->
-                                    scope.launch {
-                                        runCatching { model.markCollabThreadRead(supervisorItem.threadId, supervisorItem.lastMessage?.seq, read) }
-                                        refresh(silent = true)
-                                    }
-                                },
-                                onToggleSupervisor = { memberId, nextSupervisor ->
-                                    scope.launch {
-                                        runCatching {
-                                            model.execCollabCommand(
-                                                "member.update",
-                                                mapOf("memberId" to memberId, "isSupervisor" to nextSupervisor),
-                                            )
-                                        }
-                                        refresh(silent = true)
-                                    }
-                                },
-                                onUpdateSpaceTagColor = { _, _ -> },
-                                onMoveToContactGroup = { groupId ->
-                                    val entryId = supervisorItem.member?.resolvedIdentityId ?: supervisorItem.targetSpaceId
-                                    scope.launch {
-                                        runCatching {
-                                            model.execCollabCommand(
-                                                "contact.moveToGroup",
-                                                mapOf(
-                                                    "workspaceId" to activeWorkspaceId,
-                                                    "groupId" to groupId,
-                                                    "entryType" to if (supervisorItem.isGroup) "space" else "member",
-                                                    "entryId" to entryId,
-                                                ),
-                                            )
-                                        }
-                                        refresh(silent = true)
-                                    }
-                                },
-                                onDelete = {
-                                    val memberId = supervisorItem.member?.resolvedIdentityId ?: return@CollabContactRow
-                                    scope.launch {
-                                        runCatching {
-                                            model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
-                                        }
-                                        refresh(silent = false)
-                                    }
-                                },
-                            )
-                        }
+                    CollabTab.entries.forEach { tab ->
+                        val selected = selectedTab == tab
+                        Text(
+                            text = tab.title,
+                            color = if (selected) c.textPrimary else c.textSecondary,
+                            fontSize = 13.sp,
+                            fontWeight = if (selected) FontWeight.SemiBold else FontWeight.Medium,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .weight(1f)
+                                .then(
+                                    if (selected) Modifier.shadow(1.5.dp, RoundedCornerShape(7.dp), ambientColor = Color.Black.copy(alpha = 0.08f))
+                                    else Modifier,
+                                )
+                                .clip(RoundedCornerShape(7.dp))
+                                .background(if (selected) c.segmentedThumb else Color.Transparent)
+                                .clickable { selectedTab = tab }
+                                .padding(vertical = 6.dp),
+                        )
                     }
                 }
 
-                if (contactGroups.isNotEmpty()) {
-                    val knownGroupIds = contactGroups.map { it.groupId }.toSet()
-
-                    items(contactGroups, key = { "cg_${it.groupId}" }) { group ->
-                        val groupEntries = filteredItems.filter { item ->
-                            item.id != supervisorItem?.id && item.groupId == group.groupId
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(c.bgElevated)
+                        .padding(horizontal = 12.dp, vertical = 9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Icon(Icons.Outlined.Search, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(15.dp))
+                    Box(modifier = Modifier.weight(1f)) {
+                        if (searchText.isEmpty()) {
+                            Text("搜索群组或助手…", color = c.textSecondary, fontSize = 14.sp)
                         }
-                        if (groupEntries.isNotEmpty() || searchText.isEmpty()) {
-                            val isCollapsed = collapsedGroupIds.contains(group.groupId)
-                            var showGroupMenu by remember { mutableStateOf(false) }
+                        BasicTextField(
+                            value = searchText,
+                            onValueChange = { searchText = it },
+                            singleLine = true,
+                            textStyle = TextStyle(color = c.textPrimary, fontSize = 14.sp),
+                            cursorBrush = SolidColor(c.accent),
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                    if (searchText.isNotEmpty()) {
+                        Icon(
+                            Icons.Outlined.Close,
+                            contentDescription = "清除",
+                            tint = c.textSecondary,
+                            modifier = Modifier
+                                .size(16.dp)
+                                .clickable { searchText = "" },
+                        )
+                    }
+                }
+            }
 
-                            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                Row(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .padding(horizontal = 4.dp),
-                                    verticalAlignment = Alignment.CenterVertically,
-                                ) {
+            // Content List
+            if (loading && sidebarItems.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
+                }
+            } else if (filteredItems.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Column(
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                        verticalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        Icon(Icons.Outlined.Groups, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(36.dp))
+                        Text("暂无协作空间或助手", color = c.textPrimary, fontSize = 15.sp, fontWeight = FontWeight.SemiBold)
+                        Text("点击右上角 + 创建你的第一个助手或协作群组", color = c.textSecondary, fontSize = 13.sp)
+                    }
+                }
+            } else {
+                LazyColumn(
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 32.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    // Supervisor Slot
+                    if (supervisorItem != null) {
+                        item(key = "section_supervisor") {
+                            CollabSectionCard(title = "主管") {
+                                CollabContactRow(
+                                    item = supervisorItem,
+                                    isSupervisorSlot = true,
+                                    contactGroups = contactGroups,
+                                    onClick = { activeChatItem = supervisorItem },
+                                    onMarkRead = { read ->
+                                        scope.launch {
+                                            runCatching { model.markCollabThreadRead(supervisorItem.threadId, supervisorItem.lastMessage?.seq, read) }
+                                            refresh(silent = true)
+                                        }
+                                    },
+                                    onToggleSupervisor = { memberId, nextSupervisor ->
+                                        scope.launch {
+                                            runCatching {
+                                                model.execCollabCommand(
+                                                    "member.update",
+                                                    mapOf("memberId" to memberId, "isSupervisor" to nextSupervisor),
+                                                )
+                                            }
+                                            refresh(silent = true)
+                                        }
+                                    },
+                                    onUpdateSpaceTagColor = { _, _ -> },
+                                    onMoveToContactGroup = { groupId ->
+                                        val entryId = supervisorItem.member?.resolvedIdentityId ?: supervisorItem.targetSpaceId
+                                        scope.launch {
+                                            runCatching {
+                                                model.execCollabCommand(
+                                                    "contact.moveToGroup",
+                                                    mapOf(
+                                                        "workspaceId" to activeWorkspaceId,
+                                                        "groupId" to groupId,
+                                                        "entryType" to if (supervisorItem.isGroup) "space" else "member",
+                                                        "entryId" to entryId,
+                                                    ),
+                                                )
+                                            }
+                                            refresh(silent = true)
+                                        }
+                                    },
+                                    onDelete = {
+                                        val memberId = supervisorItem.member?.resolvedIdentityId ?: return@CollabContactRow
+                                        scope.launch {
+                                            runCatching {
+                                                model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
+                                            }
+                                            refresh(silent = false)
+                                        }
+                                    },
+                                )
+                            }
+                        }
+                    }
+
+                    if (contactGroups.isNotEmpty()) {
+                        val knownGroupIds = contactGroups.map { it.groupId }.toSet()
+
+                        items(contactGroups, key = { "cg_${it.groupId}" }) { group ->
+                            val groupEntries = filteredItems.filter { item ->
+                                item.id != supervisorItem?.id && item.groupId == group.groupId
+                            }
+                            if (groupEntries.isNotEmpty() || searchText.isEmpty()) {
+                                val isCollapsed = collapsedGroupIds.contains(group.groupId)
+                                var showGroupMenu by remember { mutableStateOf(false) }
+
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
                                     Row(
                                         modifier = Modifier
-                                            .weight(1f)
-                                            .clickable {
-                                                collapsedGroupIds = if (isCollapsed) collapsedGroupIds - group.groupId else collapsedGroupIds + group.groupId
-                                            },
+                                            .fillMaxWidth()
+                                            .padding(horizontal = 4.dp),
                                         verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(6.dp),
                                     ) {
-                                        Icon(
-                                            if (isCollapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
-                                            contentDescription = null,
-                                            tint = c.textSecondary,
-                                            modifier = Modifier.size(16.dp),
-                                        )
-                                        Text(
-                                            text = "${group.name} (${groupEntries.size})",
-                                            color = c.textSecondary,
-                                            fontSize = 12.sp,
-                                            fontWeight = FontWeight.SemiBold,
-                                        )
-                                    }
-                                    Box {
-                                        IconButton(
-                                            onClick = { showGroupMenu = true },
-                                            modifier = Modifier.size(24.dp),
-                                        ) {
-                                            Icon(Icons.Outlined.MoreHoriz, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(16.dp))
-                                        }
-                                        DropdownMenu(
-                                            expanded = showGroupMenu,
-                                            onDismissRequest = { showGroupMenu = false },
-                                        ) {
-                                            DropdownMenuItem(
-                                                text = { Text("重命名分组") },
-                                                leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(17.dp)) },
-                                                onClick = {
-                                                    showGroupMenu = false
-                                                    renameContactGroupText = group.name
-                                                    renamingContactGroup = group
+                                        Row(
+                                            modifier = Modifier
+                                                .weight(1f)
+                                                .clickable {
+                                                    collapsedGroupIds = if (isCollapsed) collapsedGroupIds - group.groupId else collapsedGroupIds + group.groupId
                                                 },
+                                            verticalAlignment = Alignment.CenterVertically,
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                        ) {
+                                            Icon(
+                                                if (isCollapsed) Icons.Outlined.ExpandMore else Icons.Outlined.ExpandLess,
+                                                contentDescription = null,
+                                                tint = c.textSecondary,
+                                                modifier = Modifier.size(16.dp),
                                             )
-                                            DropdownMenuItem(
-                                                text = { Text("删除分组", color = c.danger) },
-                                                leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = c.danger, modifier = Modifier.size(17.dp)) },
-                                                onClick = {
-                                                    showGroupMenu = false
-                                                    scope.launch {
-                                                        runCatching {
-                                                            model.execCollabCommand("contact.deleteGroup", mapOf("groupId" to group.groupId))
-                                                        }
-                                                        refresh(silent = false)
-                                                    }
-                                                },
+                                            Text(
+                                                text = "${group.name} (${groupEntries.size})",
+                                                color = c.textSecondary,
+                                                fontSize = 12.sp,
+                                                fontWeight = FontWeight.SemiBold,
                                             )
                                         }
-                                    }
-                                }
-
-                                if (!isCollapsed && groupEntries.isNotEmpty()) {
-                                    Surface(
-                                        shape = RoundedCornerShape(14.dp),
-                                        color = c.card,
-                                        border = BorderStroke(0.5.dp, c.stroke),
-                                        modifier = Modifier.fillMaxWidth(),
-                                    ) {
-                                        Column {
-                                            groupEntries.forEachIndexed { idx, entry ->
-                                                if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
-                                                CollabContactRow(
-                                                    item = entry,
-                                                    isSupervisorSlot = false,
-                                                    contactGroups = contactGroups,
-                                                    onClick = { activeChatItem = entry },
-                                                    onMarkRead = { read ->
-                                                        scope.launch {
-                                                            runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
-                                                            refresh(silent = true)
-                                                        }
+                                        Box {
+                                            IconButton(
+                                                onClick = { showGroupMenu = true },
+                                                modifier = Modifier.size(24.dp),
+                                            ) {
+                                                Icon(Icons.Outlined.MoreHoriz, contentDescription = null, tint = c.textSecondary, modifier = Modifier.size(16.dp))
+                                            }
+                                            DropdownMenu(
+                                                expanded = showGroupMenu,
+                                                onDismissRequest = { showGroupMenu = false },
+                                            ) {
+                                                DropdownMenuItem(
+                                                    text = { Text("重命名分组") },
+                                                    leadingIcon = { Icon(Icons.Outlined.Edit, contentDescription = null, modifier = Modifier.size(17.dp)) },
+                                                    onClick = {
+                                                        showGroupMenu = false
+                                                        renameContactGroupText = group.name
+                                                        renamingContactGroup = group
                                                     },
-                                                    onToggleSupervisor = { memberId, nextSup ->
+                                                )
+                                                DropdownMenuItem(
+                                                    text = { Text("删除分组", color = c.danger) },
+                                                    leadingIcon = { Icon(Icons.Outlined.DeleteOutline, contentDescription = null, tint = c.danger, modifier = Modifier.size(17.dp)) },
+                                                    onClick = {
+                                                        showGroupMenu = false
                                                         scope.launch {
                                                             runCatching {
-                                                                model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
-                                                            }
-                                                            refresh(silent = true)
-                                                        }
-                                                    },
-                                                    onUpdateSpaceTagColor = { spaceId, hex ->
-                                                        scope.launch {
-                                                            runCatching {
-                                                                model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
-                                                            }
-                                                            refresh(silent = true)
-                                                        }
-                                                    },
-                                                    onMoveToContactGroup = { targetGroupId ->
-                                                        val entryId = if (entry.isGroup) entry.targetSpaceId else (entry.member?.resolvedIdentityId ?: entry.targetSpaceId)
-                                                        scope.launch {
-                                                            runCatching {
-                                                                model.execCollabCommand(
-                                                                    "contact.moveToGroup",
-                                                                    mapOf(
-                                                                        "workspaceId" to activeWorkspaceId,
-                                                                        "groupId" to targetGroupId,
-                                                                        "entryType" to if (entry.isGroup) "space" else "member",
-                                                                        "entryId" to entryId,
-                                                                    ),
-                                                                )
-                                                            }
-                                                            refresh(silent = true)
-                                                        }
-                                                    },
-                                                    onDelete = {
-                                                        scope.launch {
-                                                            runCatching {
-                                                                if (entry.isGroup) {
-                                                                    model.execCollabCommand("space.delete", mapOf("spaceId" to entry.targetSpaceId))
-                                                                } else {
-                                                                    val memberId = entry.member?.resolvedIdentityId ?: return@launch
-                                                                    model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
-                                                                }
+                                                                model.execCollabCommand("contact.deleteGroup", mapOf("groupId" to group.groupId))
                                                             }
                                                             refresh(silent = false)
                                                         }
@@ -692,161 +607,275 @@ fun CollaborationScreen(
                                             }
                                         }
                                     }
-                                }
-                            }
-                        }
-                    }
 
-                    val ungrouped = filteredItems.filter { item ->
-                        item.id != supervisorItem?.id && (item.groupId.isNullOrBlank() || item.groupId !in knownGroupIds)
-                    }
-                    if (ungrouped.isNotEmpty()) {
-                        item(key = "section_ungrouped") {
-                            CollabSectionCard(title = "未分组 (${ungrouped.size})") {
-                                ungrouped.forEachIndexed { idx, entry ->
-                                    if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
-                                    CollabContactRow(
-                                        item = entry,
-                                        isSupervisorSlot = false,
-                                        contactGroups = contactGroups,
-                                        onClick = { activeChatItem = entry },
-                                        onMarkRead = { read ->
-                                            scope.launch {
-                                                runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onToggleSupervisor = { memberId, nextSup ->
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
-                                                }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onUpdateSpaceTagColor = { spaceId, hex ->
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
-                                                }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onMoveToContactGroup = { targetGroupId ->
-                                            val entryId = if (entry.isGroup) entry.targetSpaceId else (entry.member?.resolvedIdentityId ?: entry.targetSpaceId)
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand(
-                                                        "contact.moveToGroup",
-                                                        mapOf(
-                                                            "workspaceId" to activeWorkspaceId,
-                                                            "groupId" to targetGroupId,
-                                                            "entryType" to if (entry.isGroup) "space" else "member",
-                                                            "entryId" to entryId,
-                                                        ),
+                                    if (!isCollapsed && groupEntries.isNotEmpty()) {
+                                        Surface(
+                                            shape = RoundedCornerShape(14.dp),
+                                            color = c.card,
+                                            border = BorderStroke(0.5.dp, c.stroke),
+                                            modifier = Modifier.fillMaxWidth(),
+                                        ) {
+                                            Column {
+                                                groupEntries.forEachIndexed { idx, entry ->
+                                                    if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
+                                                    CollabContactRow(
+                                                        item = entry,
+                                                        isSupervisorSlot = false,
+                                                        contactGroups = contactGroups,
+                                                        onClick = { activeChatItem = entry },
+                                                        onMarkRead = { read ->
+                                                            scope.launch {
+                                                                runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
+                                                                refresh(silent = true)
+                                                            }
+                                                        },
+                                                        onToggleSupervisor = { memberId, nextSup ->
+                                                            scope.launch {
+                                                                runCatching {
+                                                                    model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
+                                                                }
+                                                                refresh(silent = true)
+                                                            }
+                                                        },
+                                                        onUpdateSpaceTagColor = { spaceId, hex ->
+                                                            scope.launch {
+                                                                runCatching {
+                                                                    model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
+                                                                }
+                                                                refresh(silent = true)
+                                                            }
+                                                        },
+                                                        onMoveToContactGroup = { targetGroupId ->
+                                                            val entryId = if (entry.isGroup) entry.targetSpaceId else (entry.member?.resolvedIdentityId ?: entry.targetSpaceId)
+                                                            scope.launch {
+                                                                runCatching {
+                                                                    model.execCollabCommand(
+                                                                        "contact.moveToGroup",
+                                                                        mapOf(
+                                                                            "workspaceId" to activeWorkspaceId,
+                                                                            "groupId" to targetGroupId,
+                                                                            "entryType" to if (entry.isGroup) "space" else "member",
+                                                                            "entryId" to entryId,
+                                                                        ),
+                                                                    )
+                                                                }
+                                                                refresh(silent = true)
+                                                            }
+                                                        },
+                                                        onDelete = {
+                                                            scope.launch {
+                                                                runCatching {
+                                                                    if (entry.isGroup) {
+                                                                        model.execCollabCommand("space.delete", mapOf("spaceId" to entry.targetSpaceId))
+                                                                    } else {
+                                                                        val memberId = entry.member?.resolvedIdentityId ?: return@launch
+                                                                        model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
+                                                                    }
+                                                                }
+                                                                refresh(silent = false)
+                                                            }
+                                                        },
                                                     )
                                                 }
-                                                refresh(silent = true)
                                             }
-                                        },
-                                        onDelete = {
-                                            scope.launch {
-                                                runCatching {
-                                                    if (entry.isGroup) {
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        val ungrouped = filteredItems.filter { item ->
+                            item.id != supervisorItem?.id && (item.groupId.isNullOrBlank() || item.groupId !in knownGroupIds)
+                        }
+                        if (ungrouped.isNotEmpty()) {
+                            item(key = "section_ungrouped") {
+                                CollabSectionCard(title = "未分组 (${ungrouped.size})") {
+                                    ungrouped.forEachIndexed { idx, entry ->
+                                        if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
+                                        CollabContactRow(
+                                            item = entry,
+                                            isSupervisorSlot = false,
+                                            contactGroups = contactGroups,
+                                            onClick = { activeChatItem = entry },
+                                            onMarkRead = { read ->
+                                                scope.launch {
+                                                    runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onToggleSupervisor = { memberId, nextSup ->
+                                                scope.launch {
+                                                    runCatching {
+                                                        model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
+                                                    }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onUpdateSpaceTagColor = { spaceId, hex ->
+                                                scope.launch {
+                                                    runCatching {
+                                                        model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
+                                                    }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onMoveToContactGroup = { targetGroupId ->
+                                                val entryId = if (entry.isGroup) entry.targetSpaceId else (entry.member?.resolvedIdentityId ?: entry.targetSpaceId)
+                                                scope.launch {
+                                                    runCatching {
+                                                        model.execCollabCommand(
+                                                            "contact.moveToGroup",
+                                                            mapOf(
+                                                                "workspaceId" to activeWorkspaceId,
+                                                                "groupId" to targetGroupId,
+                                                                "entryType" to if (entry.isGroup) "space" else "member",
+                                                                "entryId" to entryId,
+                                                            ),
+                                                        )
+                                                    }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onDelete = {
+                                                scope.launch {
+                                                    runCatching {
+                                                        if (entry.isGroup) {
+                                                            model.execCollabCommand("space.delete", mapOf("spaceId" to entry.targetSpaceId))
+                                                        } else {
+                                                            val memberId = entry.member?.resolvedIdentityId ?: return@launch
+                                                            model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
+                                                        }
+                                                    }
+                                                    refresh(silent = false)
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        if (groupItems.isNotEmpty()) {
+                            item(key = "section_groups") {
+                                CollabSectionCard(title = "群组 (${groupItems.size})") {
+                                    groupItems.forEachIndexed { idx, entry ->
+                                        if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
+                                        CollabContactRow(
+                                            item = entry,
+                                            isSupervisorSlot = false,
+                                            contactGroups = contactGroups,
+                                            onClick = { activeChatItem = entry },
+                                            onMarkRead = { read ->
+                                                scope.launch {
+                                                    runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onToggleSupervisor = { _, _ -> },
+                                            onUpdateSpaceTagColor = { spaceId, hex ->
+                                                scope.launch {
+                                                    runCatching {
+                                                        model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
+                                                    }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onMoveToContactGroup = { _ -> },
+                                            onDelete = {
+                                                scope.launch {
+                                                    runCatching {
                                                         model.execCollabCommand("space.delete", mapOf("spaceId" to entry.targetSpaceId))
-                                                    } else {
-                                                        val memberId = entry.member?.resolvedIdentityId ?: return@launch
+                                                    }
+                                                    refresh(silent = false)
+                                                }
+                                            },
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                        if (directItems.isNotEmpty()) {
+                            item(key = "section_direct") {
+                                CollabSectionCard(title = "助手 (${directItems.size})") {
+                                    directItems.forEachIndexed { idx, entry ->
+                                        if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
+                                        CollabContactRow(
+                                            item = entry,
+                                            isSupervisorSlot = false,
+                                            contactGroups = contactGroups,
+                                            onClick = { activeChatItem = entry },
+                                            onMarkRead = { read ->
+                                                scope.launch {
+                                                    runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onToggleSupervisor = { memberId, nextSup ->
+                                                scope.launch {
+                                                    runCatching {
+                                                        model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
+                                                    }
+                                                    refresh(silent = true)
+                                                }
+                                            },
+                                            onUpdateSpaceTagColor = { _, _ -> },
+                                            onMoveToContactGroup = { _ -> },
+                                            onDelete = {
+                                                val memberId = entry.member?.resolvedIdentityId ?: return@CollabContactRow
+                                                scope.launch {
+                                                    runCatching {
                                                         model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
                                                     }
+                                                    refresh(silent = false)
                                                 }
-                                                refresh(silent = false)
-                                            }
-                                        },
-                                    )
+                                            },
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
+                }
+            }
+        }
+
+        AnimatedContent(
+            targetState = activeChatItem,
+            contentKey = { it?.id },
+            transitionSpec = {
+                if (targetState != null) {
+                    NavMotion.coverEnter togetherWith ExitTransition.None
                 } else {
-                    if (groupItems.isNotEmpty()) {
-                        item(key = "section_groups") {
-                            CollabSectionCard(title = "群组 (${groupItems.size})") {
-                                groupItems.forEachIndexed { idx, entry ->
-                                    if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
-                                    CollabContactRow(
-                                        item = entry,
-                                        isSupervisorSlot = false,
-                                        contactGroups = contactGroups,
-                                        onClick = { activeChatItem = entry },
-                                        onMarkRead = { read ->
-                                            scope.launch {
-                                                runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onToggleSupervisor = { _, _ -> },
-                                        onUpdateSpaceTagColor = { spaceId, hex ->
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("space.update", mapOf("spaceId" to spaceId, "tagColor" to hex))
-                                                }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onMoveToContactGroup = { _ -> },
-                                        onDelete = {
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("space.delete", mapOf("spaceId" to entry.targetSpaceId))
-                                                }
-                                                refresh(silent = false)
-                                            }
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
-                    if (directItems.isNotEmpty()) {
-                        item(key = "section_direct") {
-                            CollabSectionCard(title = "助手 (${directItems.size})") {
-                                directItems.forEachIndexed { idx, entry ->
-                                    if (idx > 0) HorizontalDivider(color = c.stroke, thickness = 0.5.dp)
-                                    CollabContactRow(
-                                        item = entry,
-                                        isSupervisorSlot = false,
-                                        contactGroups = contactGroups,
-                                        onClick = { activeChatItem = entry },
-                                        onMarkRead = { read ->
-                                            scope.launch {
-                                                runCatching { model.markCollabThreadRead(entry.threadId, entry.lastMessage?.seq, read) }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onToggleSupervisor = { memberId, nextSup ->
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("member.update", mapOf("memberId" to memberId, "isSupervisor" to nextSup))
-                                                }
-                                                refresh(silent = true)
-                                            }
-                                        },
-                                        onUpdateSpaceTagColor = { _, _ -> },
-                                        onMoveToContactGroup = { _ -> },
-                                        onDelete = {
-                                            val memberId = entry.member?.resolvedIdentityId ?: return@CollabContactRow
-                                            scope.launch {
-                                                runCatching {
-                                                    model.execCollabCommand("member.delete", mapOf("memberId" to memberId))
-                                                }
-                                                refresh(silent = false)
-                                            }
-                                        },
-                                    )
-                                }
-                            }
-                        }
-                    }
+                    EnterTransition.None togetherWith NavMotion.coverExit
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+            label = "collaborationChat",
+        ) { chatItem ->
+            if (chatItem != null) {
+                // Swallow touches so blank chat areas never reach the list underneath.
+                Box(Modifier.fillMaxSize().pointerInput(Unit) {}) {
+                    CollaborationChatView(
+                        state = state,
+                        model = model,
+                        item = chatItem,
+                        spaceSummary = spaces.firstOrNull { it.spaceId == chatItem.targetSpaceId },
+                        workspaceId = activeWorkspaceId,
+                        directAssistants = remember(sidebarItems) { sidebarItems.filter { !it.isGroup } },
+                        onBack = {
+                            activeChatItem = null
+                            refresh(silent = true)
+                        },
+                        onOpenConversation = { convId ->
+                            activeChatItem = null
+                            model.openConversation(convId)
+                        },
+                        onMutated = { refresh(silent = true) },
+                        onDeleteGroupDone = {
+                            activeChatItem = null
+                            refresh(silent = false)
+                        },
+                    )
                 }
             }
         }

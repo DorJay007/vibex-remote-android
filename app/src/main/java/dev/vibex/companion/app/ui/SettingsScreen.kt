@@ -115,7 +115,7 @@ private fun SettingsIndex(
     val colors = VibexTheme.colors
     val selected = state.profiles.find { it.hostId == state.selectedHostId } ?: state.profiles.firstOrNull()
     val isOnline = state.connection == ConnectionState.Online
-    val versionStr = state.hostVersion.takeIf { it.isNotBlank() }?.let { "v$it" } ?: "v0.4.3"
+    val versionStr = state.hostVersion.takeIf { it.isNotBlank() }?.let { "v$it" } ?: "v0.4.4"
 
     LazyColumn(
         Modifier.fillMaxSize().background(colors.bg),
@@ -879,10 +879,11 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
                 listOf(
                     "claude_code" to "Claude Code",
                     "codex" to "Codex",
+                    "antigravity" to "Google Antigravity",
                     "gemini" to "Gemini CLI",
+                    "grok" to "Grok",
                     "cursor" to "Cursor",
-                    "kimi" to "Kimi CLI",
-                    "qwen" to "Qwen Code",
+                    "kimi_code" to "Kimi Code",
                     "opencode" to "OpenCode",
                 )
             }
@@ -1209,7 +1210,7 @@ private fun LazyListScope.AboutSettings(state: UiState) {
                 BrandMark(56.dp)
                 Text("VibeX Companion", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
                 Text(
-                    "v${state.hostVersion.ifBlank { "0.4.3" }} (协议 v${state.hostProtocol.ifBlank { "1.0" }})",
+                    "v${state.hostVersion.ifBlank { "0.4.4" }} (协议 v${state.hostProtocol.ifBlank { "1.0" }})",
                     fontSize = 13.sp,
                     color = colors.textSecondary,
                 )

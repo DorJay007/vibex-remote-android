@@ -11,13 +11,14 @@ android {
         applicationId = "dev.vibex.companion"
         minSdk = 26
         targetSdk = 35
-        versionCode = 15
-        versionName = "0.4.3"
+        versionCode = 18
+        versionName = "0.4.5"
         vectorDrawables.useSupportLibrary = true
     }
     buildTypes {
         release {
             isMinifyEnabled = false
+            signingConfig = signingConfigs.getByName("debug")
         }
         debug {
             isMinifyEnabled = false

@@ -56,6 +56,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -80,6 +81,7 @@ import dev.vibex.companion.SessionConfigChoice
 import dev.vibex.companion.SessionConfigOption
 import dev.vibex.companion.SessionMode
 import dev.vibex.companion.agentDisplayName
+import dev.vibex.companion.bundledAgentAsset
 import dev.vibex.companion.app.ui.theme.VibexTheme
 import kotlin.math.roundToInt
 
@@ -127,6 +129,7 @@ fun PromptBar(
     onMenuChange: (ComposerMenu?) -> Unit,
     agentId: String,
     agent: CatalogAgent? = null,
+    agents: List<CatalogAgent> = emptyList(),
     modes: List<SessionMode>,
     currentModeId: String,
     configOptions: List<SessionConfigOption>,
@@ -137,6 +140,7 @@ fun PromptBar(
     onSelectMode: (String) -> Unit,
     onSelectOption: (String, String) -> Unit,
     onOpenFileBrowser: (() -> Unit)? = null,
+    onFocusChange: (Boolean) -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val colors = VibexTheme.colors
@@ -206,12 +210,22 @@ fun PromptBar(
                         title = modelOption.label,
                         choices = modelOption.choices,
                         selected = modelOption.value,
-                        leading = {
+                        leading = { choice ->
+                            val rowAgent = agents.find { it.id.equals(choice.value, ignoreCase = true) }
+                            val rowAgentId = rowAgent?.id
+                                ?: choice.value.takeIf { bundledAgentAsset(it, false) != null }
+                                ?: choice.label.takeIf { bundledAgentAsset(it, false) != null }
+                                ?: agentId
+                            val rowSvg = when {
+                                rowAgent != null -> rowAgent.iconSvg
+                                rowAgentId.equals(agentId, ignoreCase = true) -> agent?.iconSvg
+                                else -> null
+                            }
                             AgentAvatar(
-                                agentId = agentId,
-                                size = 15.dp,
-                                iconSvg = agent?.iconSvg,
-                                displayName = agent?.displayName.orEmpty(),
+                                agentId = rowAgentId,
+                                size = 16.dp,
+                                iconSvg = rowSvg,
+                                displayName = rowAgent?.displayName?.ifBlank { choice.label } ?: choice.label,
                             )
                         },
                         onSelect = { value ->
@@ -239,10 +253,16 @@ fun PromptBar(
                 }
             }
 
-            // Dock
+            // Unified Dock + Expandable Bottom Drawer (1:1 with iOS PromptBar.dockSurface)
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
+                    .shadow(
+                        elevation = if (colors.isDark) 10.dp else 6.dp,
+                        shape = dockShape,
+                        ambientColor = Color.Black.copy(alpha = if (colors.isDark) 0.22f else 0.05f),
+                        spotColor = Color.Black.copy(alpha = if (colors.isDark) 0.28f else 0.08f),
+                    )
                     .clip(dockShape)
                     .background(colors.card)
                     .then(
@@ -263,8 +283,8 @@ fun PromptBar(
                         },
                     )
                     .border(
-                        width = 0.7.dp,
-                        color = if (effortAtMax) SparkColor.copy(alpha = 0.38f) else colors.textPrimary.copy(alpha = 0.08f),
+                        width = 0.75.dp,
+                        color = if (effortAtMax) SparkColor.copy(alpha = 0.38f) else colors.stroke,
                         shape = dockShape,
                     ),
             ) {
@@ -273,7 +293,7 @@ fun PromptBar(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 14.dp, end = 14.dp, top = 12.dp, bottom = 6.dp),
+                            .padding(start = 14.dp, end = 14.dp, top = 11.dp, bottom = 6.dp),
                     ) {
                         if (text.isEmpty()) {
                             Text(
@@ -298,7 +318,13 @@ fun PromptBar(
                             cursorBrush = SolidColor(colors.accent),
                             modifier = Modifier
                                 .fillMaxWidth()
-                                .heightIn(min = 24.dp),
+                                .heightIn(min = 24.dp)
+                                .onFocusChanged { focusState ->
+                                    onFocusChange(focusState.isFocused)
+                                    if (focusState.isFocused && menu != null) {
+                                        onMenuChange(null)
+                                    }
+                                },
                         )
                     }
 
@@ -306,7 +332,7 @@ fun PromptBar(
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(start = 10.dp, end = 10.dp, bottom = 10.dp),
+                            .padding(start = 10.dp, end = 10.dp, bottom = 9.dp),
                         horizontalArrangement = Arrangement.spacedBy(6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
@@ -372,170 +398,178 @@ fun PromptBar(
                             },
                         )
                     }
-                }
-            }
 
-            // Plus Drawer below dock
-            AnimatedVisibility(
-                visible = menu == ComposerMenu.Plus,
-                enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
-                exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
-            ) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(top = 4.dp),
-                ) {
-                    when (plusPanel) {
-                        PlusPanel.Grid -> {
+                    // Integrated Plus Drawer inside the same rounded dock surface
+                    AnimatedVisibility(
+                        visible = menu == ComposerMenu.Plus,
+                        enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
+                        exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
+                    ) {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            HorizontalDivider(thickness = 0.6.dp, color = colors.stroke)
                             Column(
                                 modifier = Modifier
                                     .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
-                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                                    .padding(horizontal = 12.dp, vertical = 10.dp),
                             ) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(10.dp),
-                                ) {
-                                    PlusGridTile(
-                                        title = "文件",
-                                        subtitle = "浏览项目",
-                                        modifier = Modifier.weight(1f),
-                                        icon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.CreateNewFolder,
-                                                contentDescription = null,
-                                                tint = colors.textPrimary,
-                                                modifier = Modifier.size(20.dp),
+                                when (plusPanel) {
+                                    PlusPanel.Grid -> {
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .padding(vertical = 4.dp),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                        ) {
+                                            PlusGridTile(
+                                                title = "文件",
+                                                subtitle = "浏览项目",
+                                                modifier = Modifier.weight(1f),
+                                                icon = {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.CreateNewFolder,
+                                                        contentDescription = null,
+                                                        tint = colors.textPrimary,
+                                                        modifier = Modifier.size(20.dp),
+                                                    )
+                                                },
+                                                onClick = {
+                                                    onMenuChange(null)
+                                                    onOpenFileBrowser?.invoke()
+                                                },
                                             )
-                                        },
-                                        onClick = {
-                                            onMenuChange(null)
-                                            onOpenFileBrowser?.invoke()
-                                        },
-                                    )
-                                    PlusGridTile(
-                                        title = "模型",
-                                        subtitle = modelName,
-                                        modifier = Modifier.weight(1f),
-                                        icon = {
-                                            AgentAvatar(
-                                                agentId = agentId,
-                                                size = 22.dp,
-                                                iconSvg = agent?.iconSvg,
-                                                displayName = agent?.displayName.orEmpty(),
+                                            PlusGridTile(
+                                                title = "模型",
+                                                subtitle = modelName,
+                                                modifier = Modifier.weight(1f),
+                                                icon = {
+                                                    AgentAvatar(
+                                                        agentId = agentId,
+                                                        size = 22.dp,
+                                                        iconSvg = agent?.iconSvg,
+                                                        displayName = agent?.displayName.orEmpty(),
+                                                    )
+                                                },
+                                                onClick = {
+                                                    if (modelOption != null && modelOption.choices.isNotEmpty()) {
+                                                        plusPanel = PlusPanel.Model
+                                                    }
+                                                },
                                             )
-                                        },
-                                        onClick = {
+                                            PlusGridTile(
+                                                title = "模式",
+                                                subtitle = currentModeName,
+                                                modifier = Modifier.weight(1f),
+                                                icon = { BotModeGlyph(tint = colors.textPrimary) },
+                                                onClick = { plusPanel = PlusPanel.Mode },
+                                            )
+                                            PlusGridTile(
+                                                title = "权限",
+                                                subtitle = currentPermissionLabel,
+                                                badge = isNonDefaultPermission,
+                                                modifier = Modifier.weight(1f),
+                                                icon = {
+                                                    Icon(
+                                                        imageVector = Icons.Rounded.VerifiedUser,
+                                                        contentDescription = null,
+                                                        tint = if (isNonDefaultPermission) WarningOrange else colors.textPrimary,
+                                                        modifier = Modifier.size(20.dp),
+                                                    )
+                                                },
+                                                onClick = { plusPanel = PlusPanel.Permission },
+                                            )
+                                        }
+                                    }
+
+                                    PlusPanel.Model -> {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            PlusSubpanelHeader(title = "选择模型") { plusPanel = PlusPanel.Grid }
                                             if (modelOption != null && modelOption.choices.isNotEmpty()) {
-                                                plusPanel = PlusPanel.Model
+                                                DrawerChoiceList(
+                                                    choices = modelOption.choices,
+                                                    selected = modelOption.value,
+                                                    leading = { choice ->
+                                                        val rowAgent = agents.find { it.id.equals(choice.value, ignoreCase = true) }
+                                                        val rowAgentId = rowAgent?.id
+                                                            ?: choice.value.takeIf { bundledAgentAsset(it, false) != null }
+                                                            ?: choice.label.takeIf { bundledAgentAsset(it, false) != null }
+                                                            ?: agentId
+                                                        val rowSvg = when {
+                                                            rowAgent != null -> rowAgent.iconSvg
+                                                            rowAgentId.equals(agentId, ignoreCase = true) -> agent?.iconSvg
+                                                            else -> null
+                                                        }
+                                                        AgentAvatar(
+                                                            agentId = rowAgentId,
+                                                            size = 16.dp,
+                                                            iconSvg = rowSvg,
+                                                            displayName = rowAgent?.displayName?.ifBlank { choice.label } ?: choice.label,
+                                                        )
+                                                    },
+                                                    onSelect = { v ->
+                                                        onSelectOption(modelOption.key, v)
+                                                        onMenuChange(null)
+                                                    },
+                                                )
+                                            } else {
+                                                PlusEmptyHint("当前 Agent 不支持切换模型")
                                             }
-                                        },
-                                    )
-                                    PlusGridTile(
-                                        title = "模式",
-                                        subtitle = currentModeName,
-                                        modifier = Modifier.weight(1f),
-                                        icon = { BotModeGlyph(tint = colors.textPrimary) },
-                                        onClick = { plusPanel = PlusPanel.Mode },
-                                    )
-                                    PlusGridTile(
-                                        title = "权限",
-                                        subtitle = currentPermissionLabel,
-                                        badge = isNonDefaultPermission,
-                                        modifier = Modifier.weight(1f),
-                                        icon = {
-                                            Icon(
-                                                imageVector = Icons.Rounded.VerifiedUser,
-                                                contentDescription = null,
-                                                tint = if (isNonDefaultPermission) WarningOrange else colors.textPrimary,
-                                                modifier = Modifier.size(20.dp),
-                                            )
-                                        },
-                                        onClick = { plusPanel = PlusPanel.Permission },
-                                    )
-                                }
-                            }
-                        }
-
-                        PlusPanel.Model -> {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                PlusSubpanelHeader(title = "选择模型") { plusPanel = PlusPanel.Grid }
-                                if (modelOption != null && modelOption.choices.isNotEmpty()) {
-                                    DrawerChoiceList(
-                                        choices = modelOption.choices,
-                                        selected = modelOption.value,
-                                        leading = {
-                                            AgentAvatar(
-                                                agentId = agentId,
-                                                size = 16.dp,
-                                                iconSvg = agent?.iconSvg,
-                                                displayName = agent?.displayName.orEmpty(),
-                                            )
-                                        },
-                                        onSelect = { v ->
-                                            onSelectOption(modelOption.key, v)
-                                            onMenuChange(null)
-                                        },
-                                    )
-                                } else {
-                                    PlusEmptyHint("当前 Agent 不支持切换模型")
-                                }
-                            }
-                        }
-
-                        PlusPanel.Mode -> {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                PlusSubpanelHeader(title = "模式与推理") { plusPanel = PlusPanel.Grid }
-                                if (modes.isNotEmpty()) {
-                                    DrawerChoiceList(
-                                        choices = modes.map { SessionConfigChoice(value = it.id, label = it.name) },
-                                        selected = currentModeId.ifBlank { modes.first().id },
-                                        onSelect = { id ->
-                                            onSelectMode(id)
-                                            onMenuChange(null)
-                                        },
-                                    )
-                                }
-                                if (effortOption != null && effortOption.choices.size > 1) {
-                                    EffortMenu(
-                                        option = effortOption,
-                                        onSelect = { v -> onSelectOption(effortOption.key, v) },
-                                        modifier = Modifier.fillMaxWidth(),
-                                    )
-                                }
-                                if (modes.isEmpty() && effortOption == null) {
-                                    PlusEmptyHint("当前会话无可用模式选项")
-                                }
-                            }
-                        }
-
-                        PlusPanel.Permission -> {
-                            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                                PlusSubpanelHeader(title = "权限设置") { plusPanel = PlusPanel.Grid }
-                                when {
-                                    permissionOption != null && permissionOption.choices.isNotEmpty() -> {
-                                        DrawerChoiceList(
-                                            choices = permissionOption.choices,
-                                            selected = permissionOption.value,
-                                            onSelect = { v ->
-                                                onSelectOption(permissionOption.key, v)
-                                                onMenuChange(null)
-                                            },
-                                        )
+                                        }
                                     }
-                                    modes.isNotEmpty() -> {
-                                        DrawerChoiceList(
-                                            choices = modes.map { SessionConfigChoice(value = it.id, label = it.name) },
-                                            selected = currentModeId.ifBlank { modes.first().id },
-                                            onSelect = { id ->
-                                                onSelectMode(id)
-                                                onMenuChange(null)
-                                            },
-                                        )
+
+                                    PlusPanel.Mode -> {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            PlusSubpanelHeader(title = "模式与推理") { plusPanel = PlusPanel.Grid }
+                                            if (modes.isNotEmpty()) {
+                                                DrawerChoiceList(
+                                                    choices = modes.map { SessionConfigChoice(value = it.id, label = it.name) },
+                                                    selected = currentModeId.ifBlank { modes.first().id },
+                                                    onSelect = { id ->
+                                                        onSelectMode(id)
+                                                        onMenuChange(null)
+                                                    },
+                                                )
+                                            }
+                                            if (effortOption != null && effortOption.choices.size > 1) {
+                                                EffortMenu(
+                                                    option = effortOption,
+                                                    onSelect = { v -> onSelectOption(effortOption.key, v) },
+                                                    modifier = Modifier.fillMaxWidth(),
+                                                )
+                                            }
+                                            if (modes.isEmpty() && effortOption == null) {
+                                                PlusEmptyHint("当前会话无可用模式选项")
+                                            }
+                                        }
                                     }
-                                    else -> PlusEmptyHint("当前会话使用默认工具确认权限")
+
+                                    PlusPanel.Permission -> {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            PlusSubpanelHeader(title = "权限设置") { plusPanel = PlusPanel.Grid }
+                                            when {
+                                                permissionOption != null && permissionOption.choices.isNotEmpty() -> {
+                                                    DrawerChoiceList(
+                                                        choices = permissionOption.choices,
+                                                        selected = permissionOption.value,
+                                                        onSelect = { v ->
+                                                            onSelectOption(permissionOption.key, v)
+                                                            onMenuChange(null)
+                                                        },
+                                                    )
+                                                }
+                                                modes.isNotEmpty() -> {
+                                                    DrawerChoiceList(
+                                                        choices = modes.map { SessionConfigChoice(value = it.id, label = it.name) },
+                                                        selected = currentModeId.ifBlank { modes.first().id },
+                                                        onSelect = { id ->
+                                                            onSelectMode(id)
+                                                            onMenuChange(null)
+                                                        },
+                                                    )
+                                                }
+                                                else -> PlusEmptyHint("当前会话使用默认工具确认权限")
+                                            }
+                                        }
+                                    }
                                 }
                             }
                         }
@@ -556,14 +590,13 @@ private fun PlusGridTile(
     onClick: () -> Unit,
 ) {
     val colors = VibexTheme.colors
-    val tileShape = RoundedCornerShape(16.dp)
+    val tileShape = RoundedCornerShape(14.dp)
     val boxShape = RoundedCornerShape(14.dp)
 
     Column(
         modifier = modifier
             .clip(tileShape)
-            .background(colors.card)
-            .border(0.6.dp, colors.textPrimary.copy(alpha = 0.06f), tileShape)
+            .background(colors.bg.copy(alpha = 0.65f))
             .clickable(onClick = onClick)
             .padding(vertical = 10.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -914,48 +947,47 @@ private fun SendGlyph(
 private fun DrawerChoiceList(
     choices: List<SessionConfigChoice>,
     selected: String,
-    leading: (@Composable () -> Unit)? = null,
+    leading: (@Composable (SessionConfigChoice) -> Unit)? = null,
     onSelect: (String) -> Unit,
 ) {
     val colors = VibexTheme.colors
-    val shape = RoundedCornerShape(16.dp)
+    val shape = RoundedCornerShape(14.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 220.dp)
+            .heightIn(max = 228.dp)
             .clip(shape)
-            .background(colors.card)
-            .border(0.6.dp, colors.textPrimary.copy(alpha = 0.08f), shape)
+            .background(colors.bg.copy(alpha = 0.65f))
             .verticalScroll(rememberScrollState())
-            .padding(6.dp),
+            .padding(4.dp),
         verticalArrangement = Arrangement.spacedBy(2.dp),
     ) {
         choices.forEach { choice ->
             val isSelected = choice.value == selected
-            val rowShape = RoundedCornerShape(11.dp)
+            val rowShape = RoundedCornerShape(10.dp)
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
                     .clip(rowShape)
-                    .background(if (isSelected) colors.textPrimary.copy(alpha = 0.08f) else Color.Transparent)
+                    .background(if (isSelected) colors.accent.copy(alpha = 0.12f) else Color.Transparent)
                     .clickable { onSelect(choice.value) }
-                    .padding(horizontal = 12.dp, vertical = 10.dp),
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
                 horizontalArrangement = Arrangement.spacedBy(10.dp),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                leading?.invoke()
+                leading?.invoke(choice)
                 Text(
                     text = choice.label,
                     fontSize = 14.sp,
                     fontWeight = if (isSelected) FontWeight.SemiBold else FontWeight.Normal,
-                    color = colors.textPrimary,
+                    color = if (isSelected) colors.accent else colors.textPrimary,
                     modifier = Modifier.weight(1f),
                 )
                 if (isSelected) {
                     Icon(
                         imageVector = Icons.Rounded.Check,
                         contentDescription = null,
-                        tint = colors.textPrimary,
+                        tint = colors.accent,
                         modifier = Modifier.size(16.dp),
                     )
                 }
@@ -969,7 +1001,7 @@ private fun MenuList(
     title: String,
     choices: List<SessionConfigChoice>,
     selected: String,
-    leading: (@Composable () -> Unit)? = null,
+    leading: (@Composable (SessionConfigChoice) -> Unit)? = null,
     onSelect: (String) -> Unit,
 ) {
     val colors = VibexTheme.colors
@@ -1012,7 +1044,7 @@ private fun MenuList(
                     horizontalArrangement = Arrangement.spacedBy(9.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    leading?.invoke()
+                    leading?.invoke(choice)
                     Text(
                         text = choice.label,
                         fontSize = 14.sp,

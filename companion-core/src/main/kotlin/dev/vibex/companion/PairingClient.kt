@@ -195,7 +195,7 @@ class PairingClient(
         const val PROTOCOL_HEADER = "x-vibex-protocol-version"
         const val DEFAULT_OFFICIAL_RELAY_PORT = 443
         val DEFAULT_OFFICIAL_RELAY_BASE: String =
-            System.getenv("VIBEX_RELAY_URL")?.trim()?.takeIf { it.isNotEmpty() } ?: ""
+            System.getenv("VIBEX_RELAY_URL")?.trim()?.takeIf { it.isNotEmpty() } ?: "https://vibex.xforever.xin"
         const val HAPPY_EYEBALLS_LAN_WINDOW_MS = 250L
 
         private val rememberedRelayBases = java.util.concurrent.CopyOnWriteArraySet<String>(
@@ -296,9 +296,6 @@ class PairingClient(
             for (localPort in localPorts) {
                 candidates.add("http://127.0.0.1:$localPort")
                 candidates.add("http://10.0.2.2:$localPort")
-            }
-            for (lanOrigin in discoverSameExitLanOrigins(extraRelayOrigins = extraRelayOrigins)) {
-                candidates.add(lanOrigin)
             }
             val lanPorts = listOf(port, 17899).distinct()
 
@@ -405,64 +402,12 @@ class PairingClient(
             extraRelayOrigins: Collection<String> = emptyList(),
             timeoutMs: Int = 1800,
         ): List<DiscoveredLanHost> {
-            val bases = knownRelayBases(extraRelayOrigins)
-            if (bases.isEmpty()) return emptyList()
+            // Cloud discovery strictly probes only the user's own known/paired origins.
+            // Never query global or shared-subnet unauthenticated host lists.
             val results = mutableListOf<DiscoveredLanHost>()
-            for (base in bases) {
-                val cleanBase = base.trimEnd('/')
-                runCatching {
-                    val conn = URI("$cleanBase/v1/discover/same-net").toURL().openConnection() as HttpURLConnection
-                    conn.connectTimeout = timeoutMs
-                    conn.readTimeout = timeoutMs
-                    conn.requestMethod = "GET"
-                    if (conn.responseCode in 200..299) {
-                        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val root = JsonValue.parse(body) as? JsonValue.Object
-                        val hosts = (root?.value?.get("hosts") as? JsonValue.Array)?.value.orEmpty()
-                        for (item in hosts) {
-                            val obj = item as? JsonValue.Object ?: continue
-                            val hostId = obj.optionalText("host_id") ?: continue
-                            val name = obj.optionalText("name") ?: "VibeX Desktop"
-                            val relayPath = obj.optionalText("relay_path") ?: "/t/$hostId"
-                            val relayOrigin = "$cleanBase$relayPath"
-                            results.add(
-                                DiscoveredLanHost(
-                                    origin = relayOrigin,
-                                    hostId = hostId,
-                                    name = name,
-                                ),
-                            )
-                        }
-                    }
-                }
-                runCatching {
-                    val conn = URI("$cleanBase/v1/beacon/vbx-cloud-hosts-v1").toURL().openConnection() as HttpURLConnection
-                    conn.connectTimeout = timeoutMs
-                    conn.readTimeout = timeoutMs
-                    conn.requestMethod = "GET"
-                    if (conn.responseCode in 200..299) {
-                        val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                        val root = JsonValue.parse(body) as? JsonValue.Object
-                        val entries = (root?.value?.get("entries") as? JsonValue.Array)?.value.orEmpty()
-                        val seenIds = results.mapNotNull { it.hostId }.toMutableSet()
-                        for (item in entries.asReversed()) {
-                            val entryObj = item as? JsonValue.Object ?: continue
-                            val payload = entryObj.value["payload"] as? JsonValue.Object ?: continue
-                            val hostId = payload.optionalText("host_id")?.trim().orEmpty()
-                            if (hostId.isEmpty() || !seenIds.add(hostId)) continue
-                            val origin = payload.optionalText("origin")?.trim()?.takeIf { it.isNotEmpty() }
-                                ?: "$cleanBase/t/$hostId"
-                            val verified = probeHostHealth(origin, timeoutMs = 2000, expectedHostId = hostId)
-                            if (verified != null) {
-                                results.add(verified)
-                            }
-                        }
-                    }
-                }
-            }
             for (extra in extraRelayOrigins) {
-                if (extra.contains("/t/") && results.none { it.origin == extra }) {
-                    val verified = probeHostHealth(extra, timeoutMs = 1800)
+                if ((extra.contains("/t/") || extra.startsWith("https://", ignoreCase = true)) && results.none { it.origin == extra }) {
+                    val verified = probeHostHealth(extra, timeoutMs = timeoutMs)
                     if (verified != null) {
                         results.add(verified)
                     }
@@ -471,37 +416,28 @@ class PairingClient(
             return results.distinctBy { it.hostId ?: it.origin }
         }
 
-        private fun discoverSameExitLanOrigins(
-            extraRelayOrigins: Collection<String> = emptyList(),
-            timeoutMs: Int = 1200,
+        fun resolvePairingCodeRendezvous(
+            connectionCode: String,
+            knownOrigins: Collection<String> = emptyList(),
+            timeoutMs: Int = 2000,
         ): List<String> {
-            val bases = knownRelayBases(extraRelayOrigins)
+            val cleanCode = connectionCode
+                .trim()
+                .replace("-", "")
+                .replace(" ", "")
+                .uppercase()
+            if (cleanCode.length != 8) return emptyList()
+            val bases = knownRelayBases(knownOrigins)
             if (bases.isEmpty()) return emptyList()
-            val origins = LinkedHashSet<String>()
+            val topicHash = sha256Hex("vibex-pair-code-v1:$cleanCode").take(32)
+            val topic = "vbx-p-$topicHash"
+            val resolved = LinkedHashSet<String>()
             for (base in bases) {
-                runCatching {
-                    val cleanBase = base.trimEnd('/')
-                    val conn = URI("$cleanBase/v1/discover/same-net").toURL().openConnection() as HttpURLConnection
-                    conn.connectTimeout = timeoutMs
-                    conn.readTimeout = timeoutMs
-                    conn.requestMethod = "GET"
-                    if (conn.responseCode !in 200..299) return@runCatching
-                    val body = conn.inputStream.bufferedReader(Charsets.UTF_8).use { it.readText() }
-                    val root = JsonValue.parse(body) as? JsonValue.Object ?: return@runCatching
-                    val hosts = (root.value["hosts"] as? JsonValue.Array)?.value.orEmpty()
-                    for (item in hosts) {
-                        val obj = item as? JsonValue.Object ?: continue
-                        val lanList = (obj.value["lan_origins"] as? JsonValue.Array)?.value.orEmpty()
-                        for (lanItem in lanList) {
-                            val url = (lanItem as? JsonValue.Text)?.value?.trim().orEmpty()
-                            if (url.startsWith("http://", ignoreCase = true)) {
-                                origins.add(url)
-                            }
-                        }
-                    }
+                for (origin in queryDomesticBeaconOrigins(base, topic, expectedHostId = null, timeoutMs = timeoutMs)) {
+                    resolved.add(origin)
                 }
             }
-            return origins.toList()
+            return resolved.toList()
         }
 
         private fun queryDomesticBeaconOrigins(

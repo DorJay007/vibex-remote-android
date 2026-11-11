@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Chat
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.rounded.ArrowDownward
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
@@ -34,7 +35,9 @@ import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.EditNote
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.Info
+import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.MoreHoriz
+import androidx.compose.material.icons.rounded.Settings
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.HorizontalDivider
@@ -52,11 +55,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -126,6 +131,21 @@ fun TimelinePane(
 
     val items = view?.items.orEmpty()
     val isTurnRunning = view?.inFlightTurnId != null
+
+    var workspaceDiffCount by remember(conversationId, workspaceId) { mutableIntStateOf(0) }
+    LaunchedEffect(conversationId, workspaceId, isTurnRunning) {
+        if (workspaceId.isNotBlank() && !isTurnRunning) {
+            model.fetchWorkspaceDiff(workspaceId, conversationId) { result ->
+                result.getOrNull()?.let { diffs ->
+                    workspaceDiffCount = diffs.size
+                }
+            }
+        }
+    }
+    val totalChangeCount = remember(workspaceDiffCount, view?.fileChanges, items) {
+        val turnChanges = items.flatMap { it.changes }.map { it.path }.toSet().size
+        maxOf(workspaceDiffCount, view?.fileChanges?.size ?: 0, turnChanges)
+    }
 
     var input by remember(conversationId) { mutableStateOf("") }
     var menu by remember(conversationId) { mutableStateOf<ComposerMenu?>(null) }
@@ -208,7 +228,7 @@ fun TimelinePane(
                     .clip(CircleShape)
                     .background(colors.card)
                     .border(0.6.dp, colors.textPrimary.copy(alpha = 0.08f), CircleShape)
-                    .clickable { model.go(Route.Conversations) },
+                    .clickable { model.openNewChatLanding() },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -276,7 +296,7 @@ fun TimelinePane(
                         .clip(CircleShape)
                         .background(colors.card)
                         .border(0.6.dp, colors.textPrimary.copy(alpha = 0.08f), CircleShape)
-                        .clickable { showNewConvSheet = true },
+                        .clickable { model.openNewChatLanding() },
                     contentAlignment = Alignment.Center,
                 ) {
                     Icon(
@@ -419,8 +439,8 @@ fun TimelinePane(
                         }
                     },
                     modifier = Modifier
-                        .align(Alignment.BottomEnd)
-                        .padding(end = 14.dp, bottom = 10.dp),
+                        .align(Alignment.BottomCenter)
+                        .padding(bottom = 12.dp),
                 )
             }
         }
@@ -483,6 +503,15 @@ fun TimelinePane(
             )
         }
 
+        if (totalChangeCount > 0) {
+            ChangesSummaryBar(
+                count = totalChangeCount,
+                onOpenDiff = { showDiff = true },
+                onOpenFiles = { showFiles = true },
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+
         // PromptBar (`PromptBar.kt`)
         PromptBar(
             text = input,
@@ -491,6 +520,7 @@ fun TimelinePane(
             onMenuChange = { menu = it },
             agentId = agentId,
             agent = agent,
+            agents = state.catalog?.agents.orEmpty(),
             modes = modes,
             currentModeId = currentModeId,
             configOptions = configOptions,
@@ -561,7 +591,7 @@ fun TimelinePane(
 }
 
 /**
- * 1:1 port of iOS `MessageRow` (`ConversationDetailView.swift`).
+ * 1:1 port of iOS `MessageRow` (`ConversationDetailView.swift`) & Desktop `MessageTurnView.tsx`.
  */
 @Composable
 fun MessageRow(
@@ -578,24 +608,20 @@ fun MessageRow(
                 modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.End,
             ) {
-                Spacer(modifier = Modifier.width(48.dp))
-                val bubbleShape = RoundedCornerShape(
-                    topStart = 16.dp,
-                    bottomStart = 16.dp,
-                    bottomEnd = 5.dp,
-                    topEnd = 16.dp,
-                )
+                Spacer(modifier = Modifier.width(56.dp))
+                val bubbleShape = RoundedCornerShape(14.dp)
                 Box(
                     modifier = Modifier
                         .clip(bubbleShape)
-                        .background(colors.accent.copy(alpha = 0.16f))
-                        .padding(horizontal = 14.dp, vertical = 10.dp),
+                        .background(colors.card)
+                        .border(0.5.dp, colors.textPrimary.copy(alpha = 0.06f), bubbleShape)
+                        .padding(horizontal = 14.dp, vertical = 9.dp),
                 ) {
                     SelectionContainer {
                         Text(
                             text = item.text,
-                            fontSize = 15.sp,
-                            lineHeight = 21.sp,
+                            fontSize = 14.5.sp,
+                            lineHeight = 20.5.sp,
                             color = colors.textPrimary,
                         )
                     }
@@ -605,97 +631,114 @@ fun MessageRow(
 
         TimelineItem.Role.Assistant -> {
             val segments = remember(item) { orderedSegments(item) }
-            val lastTextSegId = remember(segments) {
-                segments.lastOrNull { it is TimelineSegment.Text }?.id
+            val textSegments = remember(segments) {
+                segments.filterIsInstance<TimelineSegment.Text>().filter { it.text.isNotBlank() }
+            }
+            val processSegments = remember(segments) {
+                segments.filter { it !is TimelineSegment.Text }
+            }
+            val hasProcessSteps = processSegments.isNotEmpty() || item.changes.isNotEmpty()
+            var processExpanded by remember(item.id) { mutableStateOf(false) }
+            val showExpandedProcess = processExpanded || (item.streaming && textSegments.isEmpty() && item.text.isBlank())
+
+            val workedForLabel = remember(item.streaming, textSegments.isEmpty(), item.thinkingDurationMs) {
+                if (item.streaming && textSegments.isEmpty() && item.text.isBlank()) {
+                    "Working…"
+                } else {
+                    val ms = (item.thinkingDurationMs ?: 60_000).toDouble()
+                    val totalMinutes = kotlin.math.max(1L, kotlin.math.round(ms / 60_000.0).toLong())
+                    val hours = totalMinutes / 60
+                    val minutes = totalMinutes % 60
+                    "Worked for ${hours}h ${minutes}m"
+                }
             }
 
             Column(
                 modifier = Modifier.fillMaxWidth(),
                 verticalArrangement = Arrangement.spacedBy(10.dp),
             ) {
-                // Assistant Header: AgentIconView + DisplayName + ModelName + Streaming orange dot
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(7.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Box(
+                // Desktop-style `> Worked for Xh Ym` Collapsible Process Group (`MessageTurnView.tsx:537-595`)
+                if (hasProcessSteps) {
+                    Row(
                         modifier = Modifier
-                            .size(22.dp)
                             .clip(RoundedCornerShape(6.dp))
-                            .background(colors.card),
-                        contentAlignment = Alignment.Center,
+                            .clickable { processExpanded = !processExpanded }
+                            .padding(vertical = 2.dp),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
                     ) {
-                        AgentAvatar(
-                            agentId = agentId,
-                            size = 15.dp,
-                            iconSvg = agent?.iconSvg,
-                            displayName = agent?.displayName.orEmpty(),
-                        )
-                    }
-
-                    Text(
-                        text = agentDisplayName(agentId, agent?.displayName.orEmpty()),
-                        fontSize = 12.5.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = colors.textPrimary,
-                    )
-
-                    item.modelName?.takeIf { it.isNotBlank() }?.let { model ->
-                        Text(
-                            text = model,
-                            fontSize = 11.5.sp,
-                            color = colors.textSecondary,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-
-                    if (item.streaming) {
-                        Box(
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = null,
+                            tint = colors.textSecondary,
                             modifier = Modifier
-                                .size(6.dp)
-                                .clip(CircleShape)
-                                .background(RunningOrange),
+                                .size(14.dp)
+                                .rotate(if (showExpandedProcess) 90f else 0f),
                         )
-                    }
-                }
-
-                // Chronological Segments
-                segments.forEachIndexed { idx, segment ->
-                    val isLastSegment = idx == segments.lastIndex
-                    when (segment) {
-                        is TimelineSegment.Thinking -> {
-                            ThinkingView(
-                                text = segment.text,
-                                durationMs = segment.durationMs,
-                                working = item.streaming && isLastSegment,
-                            )
-                        }
-                        is TimelineSegment.Tools -> {
-                            ToolChipsView(
-                                tools = segment.steps,
-                                changes = emptyList(),
-                                working = item.streaming && isLastSegment,
-                                openDiff = openDiff,
-                            )
-                        }
-                        is TimelineSegment.Text -> {
-                            StreamingMessageText(
-                                text = segment.text,
-                                isStreaming = item.streaming && isLastSegment,
-                                showCopyButton = !item.streaming && segment.id == lastTextSegId,
+                        Text(
+                            text = workedForLabel,
+                            fontSize = 13.sp,
+                            fontWeight = FontWeight.Medium,
+                            color = colors.textSecondary,
+                        )
+                        if (item.streaming) {
+                            Box(
+                                modifier = Modifier
+                                    .size(5.5.dp)
+                                    .clip(CircleShape)
+                                    .background(RunningOrange),
                             )
                         }
                     }
+
+                    if (showExpandedProcess) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 4.dp),
+                            verticalArrangement = Arrangement.spacedBy(6.dp),
+                        ) {
+                            processSegments.forEachIndexed { idx, segment ->
+                                val isLastProcess = idx == processSegments.lastIndex && textSegments.isEmpty()
+                                when (segment) {
+                                    is TimelineSegment.Thinking -> {
+                                        ThinkingView(
+                                            text = segment.text,
+                                            durationMs = segment.durationMs,
+                                            working = item.streaming && isLastProcess,
+                                        )
+                                    }
+                                    is TimelineSegment.Tools -> {
+                                        ToolChipsView(
+                                            tools = segment.steps,
+                                            changes = emptyList(),
+                                            working = item.streaming && isLastProcess,
+                                            openDiff = openDiff,
+                                        )
+                                    }
+                                    is TimelineSegment.Text -> Unit
+                                }
+                            }
+
+                            if (item.changes.isNotEmpty()) {
+                                ToolChipsView(
+                                    tools = emptyList(),
+                                    changes = item.changes,
+                                    working = false,
+                                    openDiff = openDiff,
+                                )
+                            }
+                        }
+                    }
                 }
 
-                // File changes chips at bottom of turn
-                if (item.changes.isNotEmpty()) {
-                    ToolChipsView(
-                        tools = emptyList(),
-                        changes = item.changes,
-                        working = false,
-                        openDiff = openDiff,
+                // Assistant Markdown Answer
+                textSegments.forEachIndexed { idx, segment ->
+                    val isLastText = idx == textSegments.lastIndex
+                    StreamingMessageText(
+                        text = segment.text,
+                        isStreaming = item.streaming && isLastText,
+                        showCopyButton = !item.streaming && isLastText,
                     )
                 }
 
@@ -703,6 +746,62 @@ fun MessageRow(
                     LoadingState(label = "正在思考")
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun ChangesSummaryBar(
+    count: Int,
+    onOpenDiff: () -> Unit,
+    onOpenFiles: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val colors = VibexTheme.colors
+    Row(
+        modifier = modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(CircleShape)
+                .background(colors.card)
+                .border(0.75.dp, colors.textPrimary.copy(alpha = 0.10f), CircleShape)
+                .clickable(onClick = onOpenDiff)
+                .padding(horizontal = 10.dp, vertical = 5.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Settings,
+                contentDescription = null,
+                tint = colors.textSecondary,
+                modifier = Modifier.size(12.dp),
+            )
+            Text(
+                text = "$count CHANGES",
+                fontSize = 11.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFamily = FontFamily.Monospace,
+                color = colors.textPrimary.copy(alpha = 0.88f),
+            )
+        }
+
+        Box(
+            modifier = Modifier
+                .size(26.dp)
+                .clip(RoundedCornerShape(6.dp))
+                .background(colors.card)
+                .clickable(onClick = onOpenFiles),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(
+                imageVector = Icons.Rounded.Folder,
+                contentDescription = "浏览文件",
+                tint = colors.textSecondary,
+                modifier = Modifier.size(14.dp),
+            )
         }
     }
 }
@@ -800,43 +899,46 @@ private fun ScrollToBottomButton(
     modifier: Modifier = Modifier,
 ) {
     val colors = VibexTheme.colors
+    val showExtendedLabel = unreadUpdates > 0 || isTurnRunning
     val label = when {
         unreadUpdates > 0 -> "$unreadUpdates 条新动态"
         isTurnRunning -> "跟随最新回答"
-        else -> "回到底部"
+        else -> null
     }
 
     Row(
         modifier = modifier
-            .height(36.dp)
-            .shadow(10.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.14f), spotColor = Color.Black.copy(alpha = 0.14f))
+            .height(34.dp)
+            .shadow(8.dp, CircleShape, ambientColor = Color.Black.copy(alpha = 0.16f), spotColor = Color.Black.copy(alpha = 0.16f))
             .clip(CircleShape)
             .background(colors.card)
-            .border(0.8.dp, colors.accent.copy(alpha = 0.35f), CircleShape)
+            .border(0.8.dp, colors.textPrimary.copy(alpha = 0.14f), CircleShape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 13.dp),
+            .padding(horizontal = if (showExtendedLabel) 13.dp else 10.dp),
         horizontalArrangement = Arrangement.spacedBy(6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         if (unreadUpdates > 0 || isTurnRunning) {
             Box(
                 modifier = Modifier
-                    .size(7.dp)
+                    .size(6.5.dp)
                     .clip(CircleShape)
                     .background(RunningOrange),
             )
         }
-        Text(
-            text = label,
-            fontSize = 12.5.sp,
-            fontWeight = FontWeight.SemiBold,
-            color = colors.textPrimary,
-        )
+        if (label != null) {
+            Text(
+                text = label,
+                fontSize = 12.sp,
+                fontWeight = FontWeight.SemiBold,
+                color = colors.textPrimary,
+            )
+        }
         Icon(
-            imageVector = Icons.Rounded.ArrowDownward,
-            contentDescription = null,
-            tint = colors.accent,
-            modifier = Modifier.size(13.dp),
+            imageVector = Icons.Rounded.KeyboardArrowDown,
+            contentDescription = "回到底部",
+            tint = colors.textPrimary,
+            modifier = Modifier.size(16.dp),
         )
     }
 }

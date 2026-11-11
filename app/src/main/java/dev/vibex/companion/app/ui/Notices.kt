@@ -3,12 +3,14 @@ package dev.vibex.companion.app.ui
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.Close
@@ -16,19 +18,24 @@ import androidx.compose.material.icons.rounded.ErrorOutline
 import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.WarningAmber
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.vibex.companion.NoticeSeverity
 import dev.vibex.companion.SessionNotice
 import dev.vibex.companion.app.ui.theme.VibexTheme
+import kotlinx.coroutines.delay
 
 @Composable
 fun HostBanner(text: String, severity: NoticeSeverity, onDismiss: () -> Unit) {
@@ -38,11 +45,37 @@ fun HostBanner(text: String, severity: NoticeSeverity, onDismiss: () -> Unit) {
         NoticeSeverity.Warning -> colors.hold
         NoticeSeverity.Info -> colors.accent
     }
+    LaunchedEffect(text, severity) {
+        delay(if (severity == NoticeSeverity.Info) 2_600L else 3_500L)
+        onDismiss()
+    }
+    val shape = CircleShape
     Row(
         Modifier
+            .padding(horizontal = 16.dp, vertical = 6.dp)
             .fillMaxWidth()
-            .background(tint.copy(0.14f))
-            .padding(horizontal = 12.dp, vertical = 8.dp),
+            .shadow(
+                elevation = 10.dp,
+                shape = shape,
+                ambientColor = Color.Black.copy(alpha = 0.12f),
+                spotColor = Color.Black.copy(alpha = 0.16f),
+            )
+            .clip(shape)
+            .background(colors.card)
+            .border(0.75.dp, tint.copy(alpha = 0.28f), shape)
+            .pointerInput(text) {
+                var totalDy = 0f
+                detectVerticalDragGestures(
+                    onVerticalDrag = { _, dragAmount ->
+                        totalDy += dragAmount
+                        if (totalDy < -24f) {
+                            onDismiss()
+                        }
+                    },
+                )
+            }
+            .clickable(onClick = onDismiss)
+            .padding(horizontal = 14.dp, vertical = 9.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
@@ -54,12 +87,17 @@ fun HostBanner(text: String, severity: NoticeSeverity, onDismiss: () -> Unit) {
             },
             null,
             tint = tint,
-            modifier = Modifier.size(18.dp),
+            modifier = Modifier.size(16.dp),
         )
-        Text(text, color = colors.textPrimary, fontSize = 13.sp, modifier = Modifier.weight(1f))
-        IconButton(onClick = onDismiss, modifier = Modifier.size(32.dp)) {
-            Icon(Icons.Rounded.Close, "关闭", tint = colors.textSecondary, modifier = Modifier.size(16.dp))
-        }
+        Text(
+            text,
+            color = colors.textPrimary,
+            fontSize = 13.sp,
+            fontWeight = FontWeight.Medium,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.weight(1f),
+        )
     }
 }
 

@@ -223,7 +223,7 @@ fun AgentAvatar(agentId: String, size: Dp = 28.dp, iconSvg: String? = null, disp
     val colors = VibexTheme.colors
     val context = LocalContext.current
     val asset = remember(agentId, colors.isDark) { bundledAgentAsset(agentId, colors.isDark) }
-    val bytes = remember(asset, iconSvg) {
+    val bytes = remember(asset, iconSvg, colors.isDark) {
         if (asset != null) {
             agentAssetCache[asset] ?: runCatching {
                 context.assets.open("agents/$asset").use { it.readBytes() }.also {
@@ -231,15 +231,26 @@ fun AgentAvatar(agentId: String, size: Dp = 28.dp, iconSvg: String? = null, disp
                 }
             }.getOrNull()
         } else {
-            iconSvg?.takeIf { it.contains("<svg", true) }?.toByteArray()
+            val fill = if (colors.isDark) "#F5F5F5" else "#111111"
+            iconSvg
+                ?.takeIf { it.contains("<svg", true) }
+                ?.replace("currentColor", fill)
+                ?.let { raw ->
+                    if (!raw.contains("width=", ignoreCase = true)) {
+                        raw.replaceFirst("<svg", "<svg width=\"24\" height=\"24\"", ignoreCase = true)
+                    } else {
+                        raw
+                    }
+                }
+                ?.toByteArray()
         }
     }
     if (bytes != null) {
         val loader = remember(context) { getSvgImageLoader(context) }
-        val request = remember(asset ?: iconSvg, size) {
+        val request = remember(asset ?: iconSvg, colors.isDark, size) {
             coil.request.ImageRequest.Builder(context)
                 .data(bytes)
-                .memoryCacheKey("agent_svg:${asset ?: iconSvg.hashCode()}:${size.value}")
+                .memoryCacheKey("agent_svg:${asset ?: iconSvg.hashCode()}:${colors.isDark}:${size.value}")
                 .crossfade(false)
                 .build()
         }

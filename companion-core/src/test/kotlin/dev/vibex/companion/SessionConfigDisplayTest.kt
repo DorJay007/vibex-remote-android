@@ -76,8 +76,10 @@ class SessionConfigDisplayTest {
 
     @Test
     fun bundledGrokAssetIgnoresCatalogLetterFallback() {
-        assertEquals("grok.svg", bundledAgentAsset("grok", dark = false))
-        assertEquals("grok.svg", bundledAgentAsset("Grok Code", dark = true))
+        assertEquals("grok-light.svg", bundledAgentAsset("grok", dark = false))
+        assertEquals("grok-dark.svg", bundledAgentAsset("Grok Code", dark = true))
+        assertEquals("antigravity-dark.svg", bundledAgentAsset("antigravity", dark = true))
+        assertEquals("gemini-dark.svg", bundledAgentAsset("gemini", dark = true))
         assertEquals("claude-dark.svg", bundledAgentAsset("claude_code", dark = true))
         assertEquals("claude-light.svg", bundledAgentAsset("Claude Code", dark = false))
         assertNull(bundledAgentAsset("workbuddy", dark = false))

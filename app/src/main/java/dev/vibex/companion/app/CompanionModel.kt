@@ -81,6 +81,7 @@ import dev.vibex.companion.app.data.ProfileStore
 import dev.vibex.companion.app.data.StoredReachability
 import dev.vibex.companion.app.data.StoredState
 import dev.vibex.companion.app.data.StreamDisplayPrefs
+import dev.vibex.companion.app.monitor.SystemNotifier
 import dev.vibex.companion.app.ui.theme.Appearance
 import dev.vibex.companion.app.ui.theme.AccentChoice
 import dev.vibex.companion.app.net.EventSocket
@@ -187,10 +188,28 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private var timelinePollJob: Job? = null
     private var connectPollJob: Job? = null
     private var autoReconnectJob: Job? = null
+    private var noticeDismissJob: Job? = null
     private var pendingConflictRetryAction: (() -> Unit)? = null
     private val declinedCloudFallbackHostIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val notifiedEventKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val knownConversationIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val locallyCreatedConversationIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    @Volatile
+    private var didSeedKnownConversations: Boolean = false
+    @Volatile
+    private var hasAutoOpenedInitialConversation: Boolean = false
+    @Volatile
+    private var userRequestedNewChatLanding: Boolean = false
     @Volatile
     private var boostPollingUntil: Long = 0L
+
+    private fun scheduleAutoDismissNotice(delayMs: Long = 2_800L) {
+        noticeDismissJob?.cancel()
+        noticeDismissJob = viewModelScope.launch {
+            delay(delayMs)
+            _state.update { it.copy(notice = null, error = null) }
+        }
+    }
 
     private val _state = MutableStateFlow(UiState())
     val state: StateFlow<UiState> = _state
@@ -325,7 +344,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         val mode = modeOverride ?: _state.value.preferredDiscoveryMode ?: return
         viewModelScope.launch {
             _state.update { it.copy(discoveringHosts = true, preferredDiscoveryMode = mode) }
-            val knownRelayOrigins = _state.value.profiles.flatMap { p -> p.reachability.map { it.origin } }
+            val knownRelayOrigins = LinkedHashSet<String>()
+            val relayBase = PairingClient.DEFAULT_OFFICIAL_RELAY_BASE.trimEnd('/')
+            _state.value.profiles.forEach { p ->
+                p.reachability.forEach { knownRelayOrigins.add(it.origin) }
+                p.lastSuccessOrigin?.let { knownRelayOrigins.add(it) }
+                if (p.hostId.isNotBlank() && !p.hostId.startsWith("host:") && relayBase.isNotEmpty()) {
+                    knownRelayOrigins.add("$relayBase/t/${p.hostId}")
+                }
+            }
             val useCloud = mode == "cloud"
             val found = withContext(Dispatchers.IO) {
                 runCatching {
@@ -431,10 +458,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                     pendingConnectSasCode = null,
                                     pendingConnectHostName = null,
                                     pendingConnectOrigin = null,
-                                    notice = "已连接电脑 $displayHost",
+                                    notice = null,
                                     route = Route.Conversations,
                                 )
                             }
+                            SystemNotifier.notifyStatus(
+                                getApplication(),
+                                "已连接电脑",
+                                displayHost.removeSuffix(".local"),
+                            )
                             connect(profile)
                             break
                         }
@@ -448,6 +480,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                 error = "电脑端已忽略连接请求",
                             )
                         }
+                        scheduleAutoDismissNotice(3_500L)
                         break
                     }
                     "expired" -> {
@@ -459,6 +492,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                 error = "连接请求已超时，请重新点击连接",
                             )
                         }
+                        scheduleAutoDismissNotice(3_500L)
                         break
                     }
                 }
@@ -515,11 +549,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
 
     fun go(route: Route) = _state.update { it.copy(route = route, error = null) }
 
-    fun dismissNotice() = _state.update { it.copy(notice = null, error = null) }
+    fun dismissNotice() {
+        noticeDismissJob?.cancel()
+        _state.update { it.copy(notice = null, error = null) }
+    }
 
     fun clearOfflineCache() {
         offline.clear()
         _state.update { it.copy(notice = "已清除本机缓存") }
+        scheduleAutoDismissNotice(2_500L)
     }
 
     fun setMonitor(enabled: Boolean) {
@@ -603,12 +641,19 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 } else {
                     val candidates = LinkedHashSet<String>()
                     origin.trim().takeIf { it.isNotEmpty() }?.let { candidates.add(it) }
+                    val knownOrigins = _state.value.profiles.mapNotNull { it.lastSuccessOrigin }
+                    val codeRendezvous = withContext(Dispatchers.IO) {
+                        runCatching {
+                            PairingClient.resolvePairingCodeRendezvous(rawToken, knownOrigins = knownOrigins)
+                        }.getOrDefault(emptyList())
+                    }
+                    candidates.addAll(codeRendezvous)
                     _state.value.discoveredHosts.forEach { candidates.add(it.origin) }
                     _state.value.activeOrigin?.takeIf { it.isNotBlank() }?.let { candidates.add(it) }
-                    _state.value.profiles.mapNotNull { it.lastSuccessOrigin }.forEach { candidates.add(it) }
+                    knownOrigins.forEach { candidates.add(it) }
                     if (candidates.isEmpty()) {
                         val autoFound = withContext(Dispatchers.IO) {
-                            runCatching { PairingClient.discoverLanHosts(includeCloudRelay = true) }.getOrDefault(emptyList())
+                            runCatching { PairingClient.discoverLanHosts(includeCloudRelay = false) }.getOrDefault(emptyList())
                         }
                         autoFound.forEach { candidates.add(it.origin) }
                     }
@@ -679,7 +724,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun openNewChatLanding() {
+        userRequestedNewChatLanding = true
+        timelinePollJob?.cancel()
+        _state.update { it.copy(route = Route.Conversations, timeline = null) }
+    }
+
     fun openConversation(id: String) {
+        userRequestedNewChatLanding = false
+        hasAutoOpenedInitialConversation = true
         _state.update { it.copy(route = Route.Timeline(id), timeline = sessions[id]?.snapshot()) }
         viewModelScope.launch { attachConversation(id) }
         startTimelinePoller(id)
@@ -741,6 +794,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                         prompt.ifBlank { null },
                     )
                 }
+                locallyCreatedConversationIds.add(created.id)
+                knownConversationIds.add(created.id)
                 val agent = _state.value.catalog?.agents?.find { it.id == resolvedAgentId }
                 withContext(Dispatchers.IO) {
                     if (!modeId.isNullOrBlank() && modeId != agent?.currentModeId) {
@@ -1644,6 +1699,29 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 synchronized(session) {
                     EventFold.apply(session, event)
                 }
+                if (event.kind == "turn_completed" || event.kind == "turn_failed") {
+                    val key = "terminal:$conversationId:${event.sequence}"
+                    if (notifiedEventKeys.add(key)) {
+                        val titleText = session.title.ifBlank { "对话任务" }
+                        if (event.kind == "turn_failed") {
+                            SystemNotifier.notifyAlert(
+                                getApplication(),
+                                key,
+                                "会话执行出错",
+                                titleText,
+                                conversationId,
+                            )
+                        } else {
+                            SystemNotifier.notifyAlert(
+                                getApplication(),
+                                key,
+                                "会话已完成",
+                                titleText,
+                                conversationId,
+                            )
+                        }
+                    }
+                }
                 publishTimeline(session)
             },
             onSnapshot = { subscriptionId, payload ->
@@ -1673,8 +1751,9 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         pingJob?.cancel()
         pingJob = viewModelScope.launch {
             while (isActive) {
-                delay(4_000)
+                delay(2_500)
                 socket.ping()
+                runCatching { loadConversations(silent = true) }
                 val refreshedResult = withContext(Dispatchers.IO) {
                     runCatching { api.capabilitiesWithReachability(HostOrigin.parse(origin), token) }
                 }
@@ -1796,17 +1875,14 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private suspend fun loadConversations() {
-        val projectId = _state.value.selectedProjectId
-        if (projectId.isNullOrBlank()) {
-            _state.update { it.copy(conversations = emptyList(), conversationsLoading = false) }
-            return
+    private suspend fun loadConversations(silent: Boolean = false) {
+        if (!silent) {
+            _state.update { it.copy(conversationsLoading = true) }
         }
-        _state.update { it.copy(conversationsLoading = true) }
         try {
             val (origin, token) = live()
             val listed = withContext(Dispatchers.IO) {
-                api.listRecent(origin, token, _state.value.sinceDays, projectId)
+                api.listRecent(origin, token, _state.value.sinceDays, null)
             }
             val merged = listed.map { summary ->
                 if (summary.agentId.isNotBlank()) summary
@@ -1817,6 +1893,44 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 )
             }
             _state.update { it.copy(conversations = merged, conversationsLoading = false, error = null) }
+
+            if (!didSeedKnownConversations) {
+                knownConversationIds.addAll(merged.map { it.id })
+                didSeedKnownConversations = true
+            } else {
+                for (conv in merged) {
+                    if (knownConversationIds.add(conv.id) && !locallyCreatedConversationIds.contains(conv.id)) {
+                        val alertKey = "new_conv:${conv.id}"
+                        if (notifiedEventKeys.add(alertKey)) {
+                            val titleText = conv.title.ifBlank { "新对话已创建，点击查看" }
+                            SystemNotifier.notifyAlert(
+                                getApplication(),
+                                alertKey,
+                                "新会话已创建",
+                                titleText,
+                                conv.id,
+                            )
+                            _state.update { it.copy(notice = "新会话已创建：$titleText") }
+                            scheduleAutoDismissNotice(3_500L)
+                            if (_state.value.route == Route.Conversations) {
+                                userRequestedNewChatLanding = false
+                                openConversation(conv.id)
+                            }
+                        }
+                    }
+                }
+            }
+
+            if (
+                !hasAutoOpenedInitialConversation &&
+                !userRequestedNewChatLanding &&
+                merged.isNotEmpty() &&
+                _state.value.route == Route.Conversations
+            ) {
+                hasAutoOpenedInitialConversation = true
+                openConversation(merged.first().id)
+            }
+
             viewModelScope.launch(Dispatchers.IO) {
                 var anyChanged = false
                 merged.take(6).forEach { summary ->
@@ -1862,6 +1976,23 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private fun rebuildInbox() {
         val items = sessions.values.flatMap { session ->
             synchronized(session) { EventFold.pendingItems(session) }
+        }
+        items.forEach { pending ->
+            val key = "inbox:${pending.conversationId}:${pending.id}"
+            if (notifiedEventKeys.add(key)) {
+                val heading = if (pending.kind == dev.vibex.companion.PendingKind.Permission) {
+                    "需要权限批准"
+                } else {
+                    "等待你回复问题"
+                }
+                SystemNotifier.notifyAlert(
+                    getApplication(),
+                    key,
+                    heading,
+                    pending.title.ifBlank { pending.conversationTitle.ifBlank { "点击打开会话处理" } },
+                    pending.conversationId,
+                )
+            }
         }
         _state.update { if (it.inbox == items) it else it.copy(inbox = items) }
     }
@@ -2145,5 +2276,6 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             else -> raw
         }
         _state.update { it.copy(error = message, pairing = false) }
+        scheduleAutoDismissNotice(3_500L)
     }
 }
