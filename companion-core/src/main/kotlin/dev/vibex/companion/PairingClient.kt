@@ -46,6 +46,9 @@ enum class AccountLinkFailure(val reason: String) {
 
 class AccountLinkException(val failure: AccountLinkFailure) : RuntimeException(failure.reason)
 
+/** The desktop could not be reached, e.g. it is offline behind the cloud relay. */
+class HostUnreachableException(status: Int) : RuntimeException("host unreachable ($status)")
+
 data class CompanionSession(
     val origin: HostOrigin,
     val credential: DeviceCredential,
@@ -85,6 +88,11 @@ class PairingClient(
     private fun throwIfAccountLinkFailure(body: String) {
         val failure = AccountLinkFailure.fromReason(errorDetails(body)?.optionalText("reason")) ?: return
         throw AccountLinkException(failure)
+    }
+
+    /** A relay answers 502/503/504 without an error envelope when the desktop is offline. */
+    private fun throwIfRelayUnreachable(status: Int) {
+        if (status in 502..504) throw HostUnreachableException(status)
     }
 
     private fun errorDetails(body: String): JsonValue.Object? {
@@ -185,7 +193,8 @@ class PairingClient(
         if (response.status !in 200..299) {
             throwIfMobileConflict(response.status, response.body)
             throwIfAccountLinkFailure(response.body)
-            throw PairingException("发起连接请求失败 (${response.status})")
+     throwIfRelayUnreachable(response.status)
+     throw PairingException("发起连接请求失败 (${response.status})")
         }
         return parseConnectRequestResult(response.body)
     }
@@ -201,7 +210,8 @@ class PairingClient(
             null,
         )
         if (response.status !in 200..299) {
-            throw PairingException("查询连接确认状态失败 (${response.status})")
+     throwIfRelayUnreachable(response.status)
+     throw PairingException("查询连接确认状态失败 (${response.status})")
         }
         return parseConnectRequestResult(response.body)
     }

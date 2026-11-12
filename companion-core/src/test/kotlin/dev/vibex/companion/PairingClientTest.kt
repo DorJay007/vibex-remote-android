@@ -130,6 +130,19 @@ class PairingClientTest {
     }
 
     @Test
+    fun requestConnectReportsAnOfflineDesktopBehindTheRelay() {
+ for (status in listOf(502, 503, 504)) {
+     val transport = ScriptedTransport(listOf(HttpExchange(status, "")))
+     assertFailsWith<HostUnreachableException> {
+  PairingClient(transport).requestConnect(
+      HostOrigin.parse("https://vibex.xforever.xin/t/host-1"),
+      accountToken = "acct-token",
+         )
+     }
+ }
+    }
+
+    @Test
     fun hostOriginRejectsCredentialsInUrl() {
         assertFailsWith<IllegalArgumentException> {
             HostOrigin.parse("http://user:secret@127.0.0.1:3080")
