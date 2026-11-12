@@ -54,7 +54,9 @@ object AccountDesktops {
             val kind = obj.textOrNull("kind")?.trim().orEmpty().ifEmpty { DESKTOP_KIND }
             if (kind != DESKTOP_KIND) continue
             val hostId = rawHostId(obj.textOrEmpty("hostId"))
-            if (hostId.isEmpty()) continue
+     // `session:<id>` is the site's placeholder for a device login without a host
+     // (phones included); there is no computer behind it to connect to.
+     if (hostId.isEmpty() || hostId.startsWith("session:")) continue
             val seenAt = obj.textAny("lastSeenAt", "updatedAt").trim()
             val existing = byHostId[hostId]
             byHostId[hostId] = AccountDesktop(

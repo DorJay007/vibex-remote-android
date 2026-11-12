@@ -36,6 +36,19 @@ class AccountDesktopsTest {
     }
 
     @Test
+    fun skipsDeviceLoginsWithoutAHost() {
+        val root = JsonValue.parse(
+     """
+     {"records": [
+  {"hostId":"session:42","hostName":"iPhone","kind":"local","lastSeenAt":"2026-11-12T11:00:00Z","configSynced":false},
+         {"hostId":"host:mac","hostName":"Mac","kind":"local","lastSeenAt":"2026-11-12T10:00:00Z","configSynced":true}
+     ]}
+     """.trimIndent(),
+        ) as JsonValue.Object
+ assertEquals(listOf("mac"), AccountDesktops.parse(root).map { it.hostId })
+    }
+
+    @Test
     fun parseToleratesMissingLists() {
         val empty = JsonValue.Object(linkedMapOf())
         assertEquals(emptyList(), AccountDesktops.parse(empty))
