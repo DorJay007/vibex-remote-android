@@ -2,6 +2,7 @@ package dev.vibex.companion.app.data
 
 import android.content.Context
 import android.os.Build
+import dev.vibex.companion.AccountAuthRequests
 import dev.vibex.companion.AccountDesktop
 import dev.vibex.companion.AccountDesktops
 import dev.vibex.companion.AssignedRelayServer
@@ -13,7 +14,11 @@ import dev.vibex.companion.asText
 import dev.vibex.companion.encodeObject
 import dev.vibex.remote.v1.JsonValue
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -123,7 +128,6 @@ data class VibeXAccountOverview(
 data class VibeXDeviceLogin(
     val requestId: String,
     val verifier: String,
-    val userCode: String,
     val verifyUrl: String,
     val expiresIn: Int,
     val interval: Int,
@@ -142,12 +146,20 @@ data class VibeXSyncableHostProfile(
     val updatedAt: String = "",
 )
 
-class VibeXAccountException(val code: String) : Exception(code)
+class VibeXAccountException(
+    val code: String,
+    val fields: List<String> = emptyList(),
+    val retryAfter: Int? = null,
+) : Exception(code)
 
 class VibeXAccountRepository(context: Context) {
     companion object {
         const val SITE_BASE_URL = "https://vibex.xforever.xin"
+        const val PRIVACY_PATH = "/docs/privacy"
+        const val LOGIN_CODE_COOLDOWN_SECONDS = 60
         private const val PREF_TOKEN_KEY = "vibex.account.token"
+        private const val DECIDED_TOKEN_ATTEMPTS = 4
+        private val UNSUPPORTED_STATUSES = setOf(404, 405, 501)
 
         fun formatCredits(micro: Long): String {
             return String.format(Locale.US, "%.2f", micro.toDouble() / 1_000_000.0)
@@ -181,43 +193,65 @@ class VibeXAccountRepository(context: Context) {
         }
     }
 
-    suspend fun startLogin(): VibeXDeviceLogin = withContext(Dispatchers.IO) {
+    suspend fun signInWithPassword(login: String, password: String) =
+        signInWithSiteSession(AccountAuthRequests.passwordLogin(login, password))
+
+    suspend fun signInWithCode(login: String, code: String) =
+        signInWithSiteSession(AccountAuthRequests.codeLogin(login, code))
+
+    /** Returns the cooldown in seconds before another code may be requested. */
+    suspend fun sendLoginCode(target: String): Int = withContext(Dispatchers.IO) {
+        val obj = requestObject("/api/auth/code", "POST", AccountAuthRequests.sendLoginCode(target), token = null)
+        obj.value["retryAfter"]?.asNumber()?.toInt() ?: LOGIN_CODE_COOLDOWN_SECONDS
+    }
+
+    suspend fun startDeviceLogin(): VibeXDeviceLogin = withContext(Dispatchers.IO) {
+        startDeviceLogin(http)
+    }
+
+    /** True once the device login is approved and its token is stored; false while it is still pending. */
+    suspend fun pollDeviceLogin(login: VibeXDeviceLogin): Boolean = withContext(Dispatchers.IO) {
+        pollDeviceLogin(login, http)
+    }
+
+    /** Signs in to the site, then approves a device login with that session to mint the app's bearer token. */
+    private suspend fun signInWithSiteSession(loginBody: String) = withContext(Dispatchers.IO) {
+        // The site session cookie lives only in this client and is dropped with it once the token is minted.
+        val sessionClient = http.newBuilder().cookieJar(InMemoryCookieJar()).build()
+        requestObject("/api/auth/login", "POST", loginBody, token = null, client = sessionClient)
+        val device = startDeviceLogin(sessionClient)
+        val decideBody = AccountAuthRequests.deviceDecide(device.requestId)
+        requestObject("/api/auth/desktop/decide", "POST", decideBody, token = null, client = sessionClient)
+        repeat(DECIDED_TOKEN_ATTEMPTS) { attempt ->
+            if (pollDeviceLogin(device, sessionClient)) return@withContext
+            if (attempt < DECIDED_TOKEN_ATTEMPTS - 1) delay(device.interval * 1000L)
+        }
+        throw VibeXAccountException("pending")
+    }
+
+    private fun startDeviceLogin(client: OkHttpClient): VibeXDeviceLogin {
         val deviceName = "${Build.MANUFACTURER} ${Build.MODEL}".trim().ifEmpty { "VibeX Android" }
-        val payload = encodeObject(
-            mapOf(
-                "deviceName" to deviceName,
-                "hostId" to "",
-                "nextPath" to "/account",
-            ),
-        )
-        val obj = requestObject("/api/auth/desktop/start", "POST", payload, token = null)
-        VibeXDeviceLogin(
+        val body = AccountAuthRequests.deviceStart(deviceName)
+        val obj = requestObject("/api/auth/desktop/start", "POST", body, token = null, client = client)
+        return VibeXDeviceLogin(
             requestId = obj.value["requestId"]?.asText().orEmpty(),
             verifier = obj.value["verifier"]?.asText().orEmpty(),
-            userCode = obj.value["userCode"]?.asText().orEmpty(),
             verifyUrl = obj.value["verifyUrl"]?.asText().orEmpty(),
             expiresIn = obj.value["expiresIn"]?.asNumber()?.toInt() ?: 300,
-            interval = (obj.value["interval"]?.asNumber()?.toInt() ?: 3).coerceAtLeast(2),
+            interval = (obj.value["interval"]?.asNumber()?.toInt() ?: 3).coerceAtLeast(1),
         )
     }
 
-    suspend fun pollLogin(login: VibeXDeviceLogin): Boolean = withContext(Dispatchers.IO) {
-        val payload = encodeObject(
-            mapOf(
-                "requestId" to login.requestId,
-                "verifier" to login.verifier,
-            ),
-        )
-        val obj = requestObject("/api/auth/desktop/token", "POST", payload, token = null)
+    private fun pollDeviceLogin(login: VibeXDeviceLogin, client: OkHttpClient): Boolean {
+        val body = AccountAuthRequests.deviceToken(login.requestId, login.verifier)
+        val obj = requestObject("/api/auth/desktop/token", "POST", body, token = null, client = client)
         val status = obj.value["status"]?.asText().orEmpty()
         val token = obj.value["token"]?.asText()?.trim().orEmpty()
         if (status == "approved" && token.isNotEmpty()) {
             setToken(token)
-            return@withContext true
+            return true
         }
-        if (status == "pending") {
-            return@withContext false
-        }
+        if (status == "pending") return false
         throw VibeXAccountException(status.ifEmpty { "failed" })
     }
 
@@ -388,6 +422,7 @@ class VibeXAccountRepository(context: Context) {
         method: String,
         jsonBody: String?,
         token: String?,
+        client: OkHttpClient = http,
     ): JsonValue.Object {
         val url = "$SITE_BASE_URL${if (path.startsWith("/")) path else "/$path"}"
         val builder = Request.Builder().url(url)
@@ -408,25 +443,47 @@ class VibeXAccountRepository(context: Context) {
             }
         }
         val response = try {
-            http.newCall(builder.build()).execute()
+            client.newCall(builder.build()).execute()
         } catch (_: Throwable) {
             throw VibeXAccountException("network")
         }
         response.use { resp ->
-            if (resp.code == 401) {
-                if (!token.isNullOrBlank()) setToken(null)
+            if (!token.isNullOrBlank() && resp.code == 401) {
+                setToken(null)
                 throw VibeXAccountException("signed_out")
-            }
-            if (resp.code == 404 || resp.code == 405 || resp.code == 501) {
-                throw VibeXAccountException("unsupported")
             }
             val raw = resp.body?.string().orEmpty()
             val parsed = runCatching { JsonValue.parse(raw) as? JsonValue.Object }.getOrNull()
+            val error = parsed?.value?.get("error")?.asText().orEmpty()
+            if (error.isEmpty() && resp.code in UNSUPPORTED_STATUSES) {
+                throw VibeXAccountException("unsupported")
+            }
             if (!resp.isSuccessful || parsed == null) {
-                val code = parsed?.value?.get("error")?.asText().orEmpty().ifEmpty { "http_${resp.code}" }
-                throw VibeXAccountException(code)
+                throw VibeXAccountException(
+                    code = error.ifEmpty { "http_${resp.code}" },
+                    fields = parsed?.value?.get("fields")?.asArray()?.value.orEmpty().mapNotNull { it.asText() },
+                    retryAfter = parsed?.value?.get("retryAfter")?.asNumber()?.toInt(),
+                )
             }
             return parsed
         }
+    }
+}
+
+/** Holds the site session for a single sign-in; never attached to the shared account client. */
+private class InMemoryCookieJar : CookieJar {
+    private val cookies = mutableListOf<Cookie>()
+
+    @Synchronized
+    override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+        this.cookies.removeAll { old -> cookies.any { it.name == old.name && it.domain == old.domain && it.path == old.path } }
+        this.cookies += cookies
+    }
+
+    @Synchronized
+    override fun loadForRequest(url: HttpUrl): List<Cookie> {
+        val now = System.currentTimeMillis()
+        cookies.removeAll { it.expiresAt < now }
+        return cookies.filter { it.matches(url) }
     }
 }

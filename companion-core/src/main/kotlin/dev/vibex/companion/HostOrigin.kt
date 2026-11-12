@@ -8,6 +8,18 @@ data class HostOrigin(val value: String) {
         return value + suffix
     }
 
+    /** Private-LAN, link-local, or loopback hosts, which are unreachable from cellular data. */
+    val isLocalNetwork: Boolean
+        get() {
+            val host = runCatching { URI(value).host }.getOrNull()?.lowercase()?.trim('[', ']') ?: return false
+            if (host == "localhost" || host.endsWith(".local") || host == "::1") return true
+            if (host.contains(':')) return host.startsWith("fd") || host.startsWith("fe80:")
+            val octets = host.split('.').map { it.toIntOrNull() ?: return false }
+            if (octets.size != 4) return false
+            val (a, b) = octets
+            return a == 10 || a == 127 || (a == 172 && b in 16..31) || (a == 192 && b == 168) || (a == 169 && b == 254)
+        }
+
     companion object {
         fun parse(raw: String): HostOrigin {
             val trimmed = raw.trim().trimEnd('/')

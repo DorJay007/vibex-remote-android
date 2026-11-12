@@ -5,6 +5,8 @@ import android.content.Context
 import android.os.Build
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import dev.vibex.companion.AccountAuthErrors
+import dev.vibex.companion.AccountAuthRequests
 import dev.vibex.companion.AccountDesktop
 import dev.vibex.companion.AccountDesktops
 import dev.vibex.companion.AccountLinkException
@@ -181,9 +183,11 @@ data class UiState(
     val accountSavedHosts: List<VibeXSyncableHostProfile> = emptyList(),
     val accountLoading: Boolean = false,
     val accountSyncingHosts: Boolean = false,
-    val accountStartingLogin: Boolean = false,
+    val accountSigningIn: Boolean = false,
+    val accountSendingCode: Boolean = false,
+    val accountCodeSent: Boolean = false,
+    val accountCodeResendAtMs: Long = 0L,
     val accountSigningOut: Boolean = false,
-    val accountLoginState: VibeXDeviceLogin? = null,
     val accountError: String? = null,
     val accountLoginRequested: Boolean = false,
     val desktopConnect: DesktopConnectSheet? = null,
@@ -2696,101 +2700,132 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    fun startAccountLogin() {
-        if (_state.value.accountStartingLogin) return
+    fun signInWithPassword(login: String, password: String) =
+        runAccountSignIn { accountRepo.signInWithPassword(login, password) }
+
+    fun signInWithCode(login: String, code: String) =
+        runAccountSignIn { accountRepo.signInWithCode(login, code) }
+
+    fun sendLoginCode(target: String) {
+        if (_state.value.accountSendingCode) return
         viewModelScope.launch {
-            _state.update { it.copy(accountStartingLogin = true, accountError = null) }
-            runCatching { accountRepo.startLogin() }
-                .onSuccess { login ->
+            _state.update { it.copy(accountSendingCode = true, accountError = null) }
+            runCatching { accountRepo.sendLoginCode(target) }
+                .onSuccess { cooldown ->
                     _state.update {
                         it.copy(
-                            accountStartingLogin = false,
-                            accountLoginState = login,
-                            accountError = null,
+                            accountSendingCode = false,
+                            accountCodeSent = true,
+                            accountCodeResendAtMs = System.currentTimeMillis() + cooldown * 1000L,
                         )
                     }
-                    runCatching {
-                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(login.verifyUrl)).apply {
-                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                        }
-                        getApplication<Application>().startActivity(intent)
-                    }
-                    startPollingAccountLogin(login)
                 }
                 .onFailure { err ->
+                    val retryAfter = (err as? VibeXAccountException)?.retryAfter
                     _state.update {
                         it.copy(
-                            accountStartingLogin = false,
-                            accountError = describeAccountError(err),
+                            accountSendingCode = false,
+                            accountError = loginErrorMessage(err),
+                            accountCodeResendAtMs = retryAfter?.let { s -> System.currentTimeMillis() + s * 1000L }
+                                ?: it.accountCodeResendAtMs,
                         )
                     }
                 }
         }
     }
 
-    fun reopenAccountVerifyUrl() {
-        val url = _state.value.accountLoginState?.verifyUrl ?: return
-        runCatching {
-            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            }
-            getApplication<Application>().startActivity(intent)
+    /**
+     * Starts a device login, then hands the provider sign-in page to [openUrl] (an in-app browser tab); the site
+     * lands on its authorize page, and the app returns to the foreground once the user approves there.
+     */
+    fun startOAuthLogin(provider: String, openUrl: (String) -> Unit) {
+        if (_state.value.accountSigningIn) return
+        accountLoginPollJob?.cancel()
+        viewModelScope.launch {
+            _state.update { it.copy(accountSigningIn = true, accountError = null) }
+            runCatching { accountRepo.startDeviceLogin() }
+                .onSuccess { login ->
+                    _state.update { it.copy(accountSigningIn = false) }
+                    openUrl(AccountAuthRequests.oauthStartUrl(VibeXAccountRepository.SITE_BASE_URL, provider, login.verifyUrl))
+                    pollOAuthLogin(login)
+                }
+                .onFailure { err ->
+                    _state.update { it.copy(accountSigningIn = false, accountError = loginErrorMessage(err)) }
+                }
         }
     }
 
-    fun cancelAccountLogin() {
-        accountLoginPollJob?.cancel()
-        accountLoginPollJob = null
-        _state.update { it.copy(accountLoginState = null) }
+    /** Shows the login screen from Settings while a paired computer keeps the app usable. */
+    fun requestAccountLogin() = setAccountLoginRequested(true)
+
+    fun dismissAccountLogin() {
+        setAccountLoginRequested(false)
+        _state.update { it.copy(accountError = null) }
     }
 
-    private fun startPollingAccountLogin(login: VibeXDeviceLogin) {
+    private fun runAccountSignIn(signIn: suspend () -> Unit) {
+        if (_state.value.accountSigningIn) return
         accountLoginPollJob?.cancel()
-        val expiresAtMs = System.currentTimeMillis() + (login.expiresIn.coerceAtLeast(30) * 1000L)
-        val intervalMs = login.interval.coerceAtLeast(2) * 1000L
+        viewModelScope.launch {
+            _state.update { it.copy(accountSigningIn = true, accountError = null) }
+            runCatching { signIn() }
+                .onSuccess { completeAccountLogin() }
+                .onFailure { err ->
+                    _state.update { it.copy(accountSigningIn = false, accountError = loginErrorMessage(err)) }
+                }
+        }
+    }
+
+    /** Polls silently until the request expires: an unapproved tab just leaves the user on the login form. */
+    private fun pollOAuthLogin(login: VibeXDeviceLogin) {
+        val expiresAtMs = System.currentTimeMillis() + login.expiresIn.coerceAtLeast(30) * 1000L
         accountLoginPollJob = viewModelScope.launch {
-            while (isActive) {
-                delay(intervalMs)
-                if (System.currentTimeMillis() >= expiresAtMs) {
-                    _state.update {
-                        it.copy(
-                            accountLoginState = null,
-                            accountError = "登录验证码已过期，请重新发起登录",
-                        )
-                    }
-                    return@launch
+            while (isActive && System.currentTimeMillis() < expiresAtMs) {
+                delay(login.interval * 1000L)
+                val approved = try {
+                    accountRepo.pollDeviceLogin(login)
+                } catch (err: VibeXAccountException) {
+                    if (err.code == "network") false else return@launch
                 }
-                val result = runCatching { accountRepo.pollLogin(login) }
-                result.onSuccess { approved ->
-                    if (approved) {
-                        setAccountLoginRequested(false)
-                        _state.update {
-                            it.copy(
-                                accountSignedIn = true,
-                                accountLoginState = null,
-                                accountError = null,
-                                desktopConnect = if (it.connection == ConnectionState.Online) null else DesktopConnectSheet(),
-                            )
-                        }
-                        refreshAccount()
-                        discoverHosts()
-                        return@launch
-                    }
-                }.onFailure { err ->
-                    if (err is VibeXAccountException && err.code == "network") {
-                        return@onFailure
-                    }
-                    _state.update {
-                        it.copy(
-                            accountLoginState = null,
-                            accountError = describeAccountError(err),
-                        )
-                    }
+                if (approved) {
+                    completeAccountLogin()
+                    bringAppToForeground()
                     return@launch
                 }
             }
         }
     }
+
+    private fun completeAccountLogin() {
+        setAccountLoginRequested(false)
+        _state.update {
+            it.copy(
+                accountSignedIn = true,
+                accountSigningIn = false,
+                accountCodeSent = false,
+                accountCodeResendAtMs = 0L,
+                accountError = null,
+                desktopConnect = if (it.connection == ConnectionState.Online) null else DesktopConnectSheet(),
+            )
+        }
+        refreshAccount()
+        discoverHosts()
+    }
+
+    /** Clearing the task above MainActivity closes the sign-in browser tab. */
+    private fun bringAppToForeground() {
+        val app = getApplication<Application>()
+        runCatching {
+            app.startActivity(
+                Intent(app, MainActivity::class.java).addFlags(
+                    Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP,
+                ),
+            )
+        }
+    }
+
+    private fun loginErrorMessage(err: Throwable): String =
+        if (err is VibeXAccountException) AccountAuthErrors.message(err.code, err.fields) else AccountAuthErrors.FALLBACK
 
     fun signOutAccount() {
         if (_state.value.accountSigningOut) return
@@ -2808,7 +2843,6 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     accountDesktops = emptyList(),
                     accountSavedHosts = emptyList(),
                     accountSigningOut = false,
-                    accountLoginState = null,
                     accountError = null,
                     desktopConnect = null,
                 )
@@ -2988,8 +3022,6 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             return when (err.code) {
                 "network" -> "无法连接到 VibeX 账号服务，请检查网络后重试"
                 "signed_out" -> "登录状态已失效，请重新登录"
-                "expired", "invalid" -> "登录验证码已过期，请重试"
-                "denied" -> "已拒绝本次登录授权"
                 else -> "账号服务请求失败（${err.code}）"
             }
         }

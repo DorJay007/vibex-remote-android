@@ -40,7 +40,6 @@ import androidx.compose.material.icons.rounded.NotificationsActive
 import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.Verified
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -1368,44 +1367,6 @@ private fun LazyListScope.AccountSettings(
                             }
                         }
                     }
-                    state.accountLoginState != null -> {
-                        val login = state.accountLoginState
-                        Column(
-                            Modifier.fillMaxWidth(),
-                            horizontalAlignment = Alignment.CenterHorizontally,
-                            verticalArrangement = Arrangement.spacedBy(10.dp),
-                        ) {
-                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = colors.accent)
-                            Text(
-                                "请在浏览器中完成 VibeX 账号登录授权",
-                                fontSize = 14.sp,
-                                fontWeight = FontWeight.SemiBold,
-                                color = colors.textPrimary,
-                                textAlign = TextAlign.Center,
-                            )
-                            if (login.userCode.isNotBlank()) {
-                                Text(
-                                    "设备验证码：${login.userCode}",
-                                    fontSize = 13.sp,
-                                    fontFamily = PlexMono,
-                                    fontWeight = FontWeight.Bold,
-                                    color = colors.accent,
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(8.dp))
-                                        .background(colors.accent.copy(alpha = 0.12f))
-                                        .padding(horizontal = 10.dp, vertical = 4.dp),
-                                )
-                            }
-                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                                TextButton(onClick = { model.cancelAccountLogin() }) {
-                                    Text("取消", color = colors.textSecondary)
-                                }
-                                TextButton(onClick = { model.reopenAccountVerifyUrl() }) {
-                                    Text("重新打开授权页", fontWeight = FontWeight.SemiBold, color = colors.accent)
-                                }
-                            }
-                        }
-                    }
                     else -> {
                         Row(
                             Modifier.fillMaxWidth(),
@@ -1427,12 +1388,12 @@ private fun LazyListScope.AccountSettings(
                                 .fillMaxWidth()
                                 .clip(RoundedCornerShape(10.dp))
                                 .background(colors.accent)
-                                .clickable(enabled = !state.accountStartingLogin) { model.startAccountLogin() }
+                                .clickable { model.requestAccountLogin() }
                                 .padding(vertical = 10.dp),
                             contentAlignment = Alignment.Center,
                         ) {
                             Text(
-                                if (state.accountStartingLogin) "正在打开授权页…" else "浏览器授权登录",
+                                "登录",
                                 fontSize = 14.sp,
                                 fontWeight = FontWeight.SemiBold,
                                 color = Color.White,
