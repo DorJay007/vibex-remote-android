@@ -162,8 +162,9 @@ fun CollaborationScreen(
     var collapsedGroupIds by remember { mutableStateOf<Set<String>>(emptySet()) }
 
     var activeChatItem by remember { mutableStateOf<CollabSidebarItem?>(null) }
-    LaunchedEffect(activeChatItem != null) {
-        onChatOpenChange(activeChatItem != null)
+    var openedBotConversationId by remember { mutableStateOf<String?>(null) }
+    LaunchedEffect(activeChatItem != null || openedBotConversationId != null) {
+        onChatOpenChange(activeChatItem != null || openedBotConversationId != null)
     }
 
     var showAddMenu by remember { mutableStateOf(false) }
@@ -453,9 +454,7 @@ fun CollaborationScreen(
 
             // Content List
             if (loading && sidebarItems.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-                }
+                CollaborationListSkeletonView(modifier = Modifier.fillMaxSize())
             } else if (filteredItems.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
@@ -867,13 +866,45 @@ fun CollaborationScreen(
                             refresh(silent = true)
                         },
                         onOpenConversation = { convId ->
-                            activeChatItem = null
-                            model.openConversation(convId)
+                            openedBotConversationId = convId
+                            model.openInlineConversation(convId)
                         },
                         onMutated = { refresh(silent = true) },
                         onDeleteGroupDone = {
                             activeChatItem = null
                             refresh(silent = false)
+                        },
+                    )
+                }
+            }
+        }
+
+        AnimatedContent(
+            targetState = openedBotConversationId,
+            contentKey = { it },
+            transitionSpec = {
+                if (targetState != null) {
+                    NavMotion.coverEnter togetherWith ExitTransition.None
+                } else {
+                    EnterTransition.None togetherWith NavMotion.coverExit
+                }
+            },
+            modifier = Modifier.fillMaxSize(),
+            label = "collaborationDetailedSession",
+        ) { detailConvId ->
+            if (detailConvId != null) {
+                BackHandler {
+                    model.closeInlineConversation()
+                    openedBotConversationId = null
+                }
+                Box(Modifier.fillMaxSize().background(c.bg).pointerInput(Unit) {}) {
+                    TimelinePane(
+                        state = state,
+                        model = model,
+                        conversationId = detailConvId,
+                        onBack = {
+                            model.closeInlineConversation()
+                            openedBotConversationId = null
                         },
                     )
                 }
@@ -1546,15 +1577,6 @@ private fun CollaborationChatView(
                 }
             }
 
-            if (!item.isGroup && item.member != null) {
-                IconButton(
-                    onClick = { openMemberUnderlyingSession(item.member!!.resolvedIdentityId) },
-                    modifier = Modifier.size(34.dp),
-                ) {
-                    Icon(Icons.Outlined.Terminal, contentDescription = "底层对话", tint = c.textPrimary, modifier = Modifier.size(18.dp))
-                }
-            }
-
             IconButton(
                 onClick = { showDetailSheet = true },
                 modifier = Modifier.size(34.dp),
@@ -1611,9 +1633,7 @@ private fun CollaborationChatView(
         // Message Stream
         Box(modifier = Modifier.weight(1f)) {
             if (loading && messages.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(color = c.accent, strokeWidth = 2.dp, modifier = Modifier.size(28.dp))
-                }
+                CollaborationChatSkeletonView(modifier = Modifier.fillMaxSize())
             } else if (messages.isEmpty()) {
                 Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                     Column(
@@ -2485,12 +2505,12 @@ private fun CollaborationDetailSheet(
                 }
             }
 
-            // 3-Segment Picker
-            val tabs = listOf(
-                if (item.isGroup) "成员" else "定制",
-                "记忆与收藏",
-                if (item.isGroup) "设置" else "会话",
-            )
+            // Segment Picker
+            val tabs = if (item.isGroup) {
+                listOf("成员", "记忆与收藏", "设置")
+            } else {
+                listOf("定制", "记忆与收藏")
+            }
             Row(
                 modifier = Modifier
                     .fillMaxWidth()

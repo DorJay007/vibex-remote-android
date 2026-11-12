@@ -147,6 +147,8 @@ fun ConversationList(
     }
     var landingModeId by remember { mutableStateOf("auto") }
     var landingEffortValue by remember { mutableStateOf("medium") }
+    var selectedModelByAgent by remember { mutableStateOf<Map<String, String>>(emptyMap()) }
+    var customRelayModels by remember { mutableStateOf<List<String>>(emptyList()) }
     var showProjectSheet by remember { mutableStateOf(false) }
     var showDiffSheet by remember { mutableStateOf(false) }
     var showFileBrowserSheet by remember { mutableStateOf(false) }
@@ -379,8 +381,8 @@ fun ConversationList(
             // 1:1 reuse of iOS PromptBar (`ConversationsView.swift` landingPromptBar)
             val resolvedWsId = currentWorkspace?.id?.ifBlank { null }
                 ?: state.conversations.firstOrNull { it.workspaceId.isNotBlank() }?.workspaceId
-            val landingModes = remember {
-                listOf(
+            val landingModes = remember(currentAgent) {
+                currentAgent?.sessionModes?.takeIf { it.isNotEmpty() } ?: listOf(
                     SessionMode("manual", "手动审批"),
                     SessionMode("accept_edits", "自动接受编辑"),
                     SessionMode("plan", "仅规划"),
@@ -388,38 +390,62 @@ fun ConversationList(
                     SessionMode("bypass", "跳过权限"),
                 )
             }
-            val landingConfigOptions = remember(agents.size, currentAgent?.id, landingEffortValue) {
-                buildList<SessionConfigOption> {
-                    if (agents.isNotEmpty()) {
-                        add(
-                            SessionConfigOption(
-                                key = "model",
-                                label = "模型",
-                                category = "model",
-                                value = currentAgent?.id ?: "claude_code",
-                                choices = agents.map { a ->
-                                    SessionConfigChoice(
-                                        value = a.id,
-                                        label = agentDisplayName(a.id, a.displayName),
-                                    )
-                                },
-                            ),
-                        )
+            val currentAgentId = currentAgent?.id ?: "claude_code"
+            val baseModelOption = remember(currentAgent, currentAgentId) {
+                currentAgent?.sessionConfig?.firstOrNull {
+                    val k = it.key.lowercase()
+                    val c = it.category.lowercase()
+                    c == "model" || k == "model" || k.contains("model")
+                } ?: dev.vibex.companion.fallbackModelOptionForAgent(currentAgentId)
+            }
+            val baseEffortOption = remember(currentAgent) {
+                currentAgent?.sessionConfig?.firstOrNull {
+                    val k = it.key.lowercase()
+                    val c = it.category.lowercase()
+                    c.contains("thought") || c.contains("effort") || c.contains("reason") ||
+                        k.contains("thought") || k.contains("effort") || k.contains("thinking") || k.contains("reason")
+                } ?: SessionConfigOption(
+                    key = "reasoning_effort",
+                    label = "推理强度",
+                    category = "thought_level",
+                    value = "medium",
+                    choices = listOf(
+                        SessionConfigChoice("low", "低"),
+                        SessionConfigChoice("medium", "中"),
+                        SessionConfigChoice("high", "高"),
+                    ),
+                )
+            }
+            val activeModelValue = selectedModelByAgent[currentAgentId]
+                ?: baseModelOption.value.ifBlank { baseModelOption.choices.firstOrNull()?.value ?: "default" }
+            val landingConfigOptions = remember(
+                currentAgentId,
+                baseModelOption,
+                baseEffortOption,
+                activeModelValue,
+                landingEffortValue,
+                customRelayModels,
+            ) {
+                val mergedChoices = buildList {
+                    customRelayModels.forEach { custom ->
+                        if (baseModelOption.choices.none { it.value == custom }) {
+                            add(SessionConfigChoice(custom, "$custom (自定义/中转)"))
+                        }
                     }
-                    add(
-                        SessionConfigOption(
-                            key = "reasoning_effort",
-                            label = "推理强度",
-                            category = "thought_level",
-                            value = landingEffortValue,
-                            choices = listOf(
-                                SessionConfigChoice("low", "低"),
-                                SessionConfigChoice("medium", "中"),
-                                SessionConfigChoice("high", "高"),
-                            ),
-                        ),
-                    )
+                    addAll(baseModelOption.choices)
+                    if (none { it.value == activeModelValue }) {
+                        add(0, SessionConfigChoice(activeModelValue, activeModelValue))
+                    }
                 }
+                listOf(
+                    baseModelOption.copy(
+                        value = activeModelValue,
+                        choices = mergedChoices,
+                    ),
+                    baseEffortOption.copy(
+                        value = landingEffortValue,
+                    ),
+                )
             }
 
             PromptBar(
@@ -427,9 +453,22 @@ fun ConversationList(
                 onTextChange = { draft = it },
                 menu = composerMenu,
                 onMenuChange = { composerMenu = it },
-                agentId = currentAgent?.id ?: "claude_code",
+                agentId = currentAgentId,
                 agent = currentAgent,
                 agents = agents,
+                showAgentSelector = true,
+                onSelectAgent = { nextAgentId ->
+                    selectedAgentId = nextAgentId
+                },
+                onAddCustomModel = { rawModel ->
+                    val trimmed = rawModel.trim()
+                    if (trimmed.isNotEmpty()) {
+                        if (trimmed !in customRelayModels) {
+                            customRelayModels = listOf(trimmed) + customRelayModels
+                        }
+                        selectedModelByAgent = selectedModelByAgent + (currentAgentId to trimmed)
+                    }
+                },
                 modes = landingModes,
                 currentModeId = landingModeId,
                 configOptions = landingConfigOptions,
@@ -439,14 +478,18 @@ fun ConversationList(
                     val text = draft.trim()
                     val wsId = resolvedWsId ?: return@PromptBar
                     if (text.isEmpty()) return@PromptBar
-                    val agId = currentAgent?.id ?: "claude_code"
                     composerMenu = null
                     draft = ""
                     model.createConversation(
                         workspaceId = wsId,
-                        agentId = agId,
+                        agentId = currentAgentId,
                         title = text.take(36),
                         prompt = text,
+                        modeId = landingModeId,
+                        config = mapOf(
+                            baseModelOption.key to activeModelValue,
+                            baseEffortOption.key to landingEffortValue,
+                        ),
                     )
                 },
                 onStop = {},
@@ -454,9 +497,10 @@ fun ConversationList(
                     landingModeId = modeId
                 },
                 onSelectOption = { key, value ->
-                    when (key) {
-                        "model" -> selectedAgentId = value
-                        "reasoning_effort" -> landingEffortValue = value
+                    if (key == baseModelOption.key || key.lowercase().contains("model")) {
+                        selectedModelByAgent = selectedModelByAgent + (currentAgentId to value)
+                    } else {
+                        landingEffortValue = value
                     }
                 },
                 onOpenFileBrowser = if (currentWorkspace != null) {
@@ -760,32 +804,6 @@ fun ConversationList(
                                 }
                             }
                         }
-                    }
-                }
-
-                HorizontalDivider(color = colors.hairline)
-
-                // Sidebar Bottom Quick Nav Strip
-                Row(
-                    Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 10.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.spacedBy(4.dp),
-                ) {
-                    SidebarQuickNav("新工作台", Icons.Rounded.AutoAwesome, Modifier.weight(1f)) {
-                        isSidebarOpen = false
-                    }
-                    SidebarQuickNav("看板", Icons.Rounded.GridView, Modifier.weight(1f)) {
-                        isSidebarOpen = false
-                        model.go(Route.Status)
-                    }
-                    SidebarQuickNav("协作空间", Icons.Rounded.Groups, Modifier.weight(1f)) {
-                        isSidebarOpen = false
-                        model.go(Route.Collaboration)
-                    }
-                    SidebarQuickNav("设置", Icons.Rounded.Settings, Modifier.weight(1f)) {
-                        isSidebarOpen = false
-                        model.go(Route.Settings())
                     }
                 }
             }

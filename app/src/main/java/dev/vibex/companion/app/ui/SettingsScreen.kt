@@ -80,6 +80,7 @@ import dev.vibex.companion.app.data.CollapseDisplay
 import dev.vibex.companion.app.data.HostProfile
 import dev.vibex.companion.app.data.MessageStreamDisplay
 import dev.vibex.companion.app.data.ThinkingDisplay
+import dev.vibex.companion.app.data.VibeXAccountRepository
 import dev.vibex.companion.app.monitor.CompanionMonitorService
 import dev.vibex.companion.app.ui.theme.Appearance
 import dev.vibex.companion.app.ui.theme.PlexMono
@@ -98,6 +99,7 @@ fun SettingsScreen(
     when (section) {
         null -> SettingsIndex(state, model, onOpen)
         SettingsSection.Profile -> SettingsPage("个人资料", onBack) { ProfileSettings(state) }
+        SettingsSection.Account -> SettingsPage("VibeX 账号", onBack) { AccountSettings(state, model, onOpen) }
         SettingsSection.Connection -> SettingsPage("已配对的电脑", onBack) { ConnectionSettings(state, model, onScan, onManualPair) }
         SettingsSection.Extensions -> SettingsPage("技能与扩展", onBack) { ExtensionsSettings(state, model) }
         SettingsSection.Font -> SettingsPage("字体", onBack) { FontSettings(state, model) }
@@ -115,7 +117,7 @@ private fun SettingsIndex(
     val colors = VibexTheme.colors
     val selected = state.profiles.find { it.hostId == state.selectedHostId } ?: state.profiles.firstOrNull()
     val isOnline = state.connection == ConnectionState.Online
-    val versionStr = state.hostVersion.takeIf { it.isNotBlank() }?.let { "v$it" } ?: "v0.4.4"
+    val versionStr = state.hostVersion.takeIf { it.isNotBlank() }?.let { "v$it" } ?: "v0.4.5"
 
     LazyColumn(
         Modifier.fillMaxSize().background(colors.bg),
@@ -133,13 +135,14 @@ private fun SettingsIndex(
             )
         }
 
-        // 1. Profile Card (1:1 with iOS screenshot)
+        // 1. VibeX Account Card (Single top Personal Center)
         item {
             IosSettingsCard {
+                val accountUser = state.accountOverview?.user
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable { onOpen(SettingsSection.Profile) }
+                        .clickable { onOpen(SettingsSection.Account) }
                         .padding(horizontal = 16.dp, vertical = 14.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -147,14 +150,41 @@ private fun SettingsIndex(
                     BotAvatarBadge(color = Color(0xFF007AFF), size = 46.dp)
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("LTF", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
-                            Text("@ltf", fontSize = 13.sp, color = colors.textTertiary)
+                            Text(
+                                if (state.accountSignedIn && accountUser != null) accountUser.resolvedDisplayName else "VibeX 账号",
+                                fontSize = 16.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                            )
+                            if (state.accountSignedIn) {
+                                val bal = VibeXAccountRepository.formatCredits(state.accountOverview?.balanceMicro ?: 0L)
+                                Text(
+                                    "$$bal",
+                                    fontSize = 11.5.sp,
+                                    fontFamily = PlexMono,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = Color(0xFF007AFF),
+                                    modifier = Modifier
+                                        .clip(CircleShape)
+                                        .background(Color(0xFF007AFF).copy(alpha = 0.14f))
+                                        .padding(horizontal = 8.dp, vertical = 2.dp),
+                                )
+                            } else {
+                                Text(
+                                    "未登录",
+                                    fontSize = 12.sp,
+                                    color = colors.textTertiary,
+                                )
+                            }
                         }
-                        Text("VibeX Creator", fontSize = 13.sp, color = colors.textSecondary)
                         Text(
-                            "本地优先 AI 协同工作流与多智能体架构",
-                            fontSize = 11.5.sp,
-                            color = colors.textTertiary,
+                            if (state.accountSignedIn && accountUser != null && accountUser.email.isNotBlank()) {
+                                "${accountUser.email} · 个人中心与云端同步"
+                            } else {
+                                "登录以跨端同步电脑、查看订阅与模型额度"
+                            },
+                            fontSize = 12.5.sp,
+                            color = colors.textSecondary,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
@@ -226,8 +256,8 @@ private fun SettingsIndex(
                 IosSettingsRow(
                     icon = Icons.Rounded.AutoAwesome,
                     tint = Color(0xFFAF52DE),
-                    title = "技能",
-                    subtitle = "技能 · MCP · 插件 · 子代理",
+                    title = "技能与扩展",
+                    subtitle = "技能 · MCP · 插件",
                     onClick = { onOpen(SettingsSection.Extensions) },
                 )
             }
@@ -908,11 +938,10 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
             Triple("技能", Icons.Rounded.AutoAwesome, state.skillsCatalog.size),
             Triple("MCP", Icons.Rounded.Dns, state.mcpCatalog.size),
             Triple("插件", Icons.Rounded.Extension, state.pluginsCatalog.size),
-            Triple("子代理", Icons.Rounded.Groups, synthesizedRoles.size),
         )
 
         Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            // Top 4-tab pill bar (1:1 with media_1794111048362_5707f911.jpg)
+            // Top 3-tab pill bar (Skills · MCP · Plugins; Subagents managed in Collaboration Space)
             Row(
                 Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
@@ -962,7 +991,8 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
             }
 
             // Search bar
-            val currentLabel = tabs[tab].first
+            val safeTab = tab.coerceIn(0, tabs.lastIndex)
+            val currentLabel = tabs[safeTab].first
             Row(
                 Modifier
                     .fillMaxWidth()
@@ -999,11 +1029,9 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
 
             val q = searchQuery.trim().lowercase()
             if (state.extensionsLoading && state.skillsCatalog.isEmpty() && state.mcpCatalog.isEmpty() && state.pluginsCatalog.isEmpty()) {
-                Box(Modifier.fillMaxWidth().padding(vertical = 48.dp), contentAlignment = Alignment.Center) {
-                    CircularProgressIndicator(Modifier.size(24.dp), color = colors.accent, strokeWidth = 2.dp)
-                }
+                SettingsCardSkeletonView(rows = 5)
             } else {
-                when (tab) {
+                when (safeTab) {
                     0 -> CatalogCardList(
                         items = state.skillsCatalog.filter { q.isEmpty() || it.name.lowercase().contains(q) || it.summary.lowercase().contains(q) },
                         icon = Icons.Rounded.AutoAwesome,
@@ -1016,14 +1044,11 @@ private fun LazyListScope.ExtensionsSettings(state: UiState, model: CompanionMod
                         emptyTitle = "暂无 MCP 服务",
                         emptySubtitle = "桌面端配置的本地与全局 MCP 服务将在此显示。",
                     )
-                    2 -> CatalogCardList(
+                    else -> CatalogCardList(
                         items = state.pluginsCatalog.filter { q.isEmpty() || it.name.lowercase().contains(q) || it.summary.lowercase().contains(q) },
                         icon = Icons.Rounded.Extension,
                         emptyTitle = "暂无已安装插件",
                         emptySubtitle = "桌面端安装并启用的插件将在此显示。",
-                    )
-                    3 -> SubagentRolesList(
-                        roles = synthesizedRoles.filter { q.isEmpty() || it.name.lowercase().contains(q) || it.agentId.lowercase().contains(q) || it.summary.lowercase().contains(q) },
                     )
                 }
             }
@@ -1210,7 +1235,7 @@ private fun LazyListScope.AboutSettings(state: UiState) {
                 BrandMark(56.dp)
                 Text("VibeX Companion", fontSize = 18.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
                 Text(
-                    "v${state.hostVersion.ifBlank { "0.4.4" }} (协议 v${state.hostProtocol.ifBlank { "1.0" }})",
+                    "v${state.hostVersion.ifBlank { "0.4.5" }} (协议 v${state.hostProtocol.ifBlank { "1.0" }})",
                     fontSize = 13.sp,
                     color = colors.textSecondary,
                 )
@@ -1259,6 +1284,420 @@ private fun <T> SettingChoice(title: String, options: List<Pair<T, String>>, cur
                 )
             }
         }
+    }
+}
+
+private fun LazyListScope.AccountSettings(
+    state: UiState,
+    model: CompanionModel,
+    onOpen: (SettingsSection) -> Unit,
+) {
+    val overview = state.accountOverview
+    val user = overview?.user
+
+    // 1. Account Profile / Login Card
+    item {
+        val colors = VibexTheme.colors
+        LaunchedEffect(state.accountSignedIn) {
+            if (state.accountSignedIn) {
+                model.refreshAccount()
+            }
+        }
+        IosSettingsCard {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                when {
+                    state.accountLoading && !state.accountSignedIn -> {
+                        AccountProfileSkeletonRow()
+                    }
+                    state.accountSignedIn && user != null -> {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(14.dp),
+                        ) {
+                            Box(
+                                Modifier
+                                    .size(50.dp)
+                                    .clip(CircleShape)
+                                    .background(colors.accent.copy(alpha = 0.15f)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    user.avatarInitial,
+                                    fontSize = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.accent,
+                                )
+                            }
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(
+                                        user.resolvedDisplayName,
+                                        fontSize = 16.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = colors.textPrimary,
+                                    )
+                                    val isActive = overview.hasActiveCreditsOrTier
+                                    Text(
+                                        if (isActive) "已激活" else "免费版",
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (isActive) colors.accent else colors.textSecondary,
+                                        modifier = Modifier
+                                            .clip(CircleShape)
+                                            .background(if (isActive) colors.accent.copy(alpha = 0.14f) else colors.segmentedTrack)
+                                            .padding(horizontal = 7.dp, vertical = 2.dp),
+                                    )
+                                }
+                                if (user.email.isNotBlank()) {
+                                    Text(user.email, fontSize = 12.5.sp, color = colors.textSecondary)
+                                }
+                                if (user.accountIdentifier.isNotBlank()) {
+                                    Text(
+                                        "ID: ${user.accountIdentifier}",
+                                        fontSize = 11.5.sp,
+                                        fontFamily = PlexMono,
+                                        color = colors.textTertiary,
+                                    )
+                                }
+                            }
+                            TextButton(onClick = { model.refreshAccount() }) {
+                                Text("刷新", fontSize = 12.5.sp, color = colors.accent)
+                            }
+                        }
+                    }
+                    state.accountLoginState != null -> {
+                        val login = state.accountLoginState
+                        Column(
+                            Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            CircularProgressIndicator(modifier = Modifier.size(22.dp), strokeWidth = 2.dp, color = colors.accent)
+                            Text(
+                                "请在浏览器中完成 VibeX 账号登录授权",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.textPrimary,
+                                textAlign = TextAlign.Center,
+                            )
+                            if (login.userCode.isNotBlank()) {
+                                Text(
+                                    "设备验证码：${login.userCode}",
+                                    fontSize = 13.sp,
+                                    fontFamily = PlexMono,
+                                    fontWeight = FontWeight.Bold,
+                                    color = colors.accent,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(colors.accent.copy(alpha = 0.12f))
+                                        .padding(horizontal = 10.dp, vertical = 4.dp),
+                                )
+                            }
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                TextButton(onClick = { model.cancelAccountLogin() }) {
+                                    Text("取消", color = colors.textSecondary)
+                                }
+                                TextButton(onClick = { model.reopenAccountVerifyUrl() }) {
+                                    Text("重新打开授权页", fontWeight = FontWeight.SemiBold, color = colors.accent)
+                                }
+                            }
+                        }
+                    }
+                    else -> {
+                        Row(
+                            Modifier.fillMaxWidth(),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        ) {
+                            ColoredIconBadge(Icons.Rounded.Verified, Color(0xFF007AFF))
+                            Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
+                                Text("登录 VibeX 账号", fontSize = 15.5.sp, fontWeight = FontWeight.Bold, color = colors.textPrimary)
+                                Text(
+                                    "跨设备自动同步已配对电脑、查看订阅计划与模型路由额度",
+                                    fontSize = 12.sp,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
+                        Box(
+                            Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(colors.accent)
+                                .clickable(enabled = !state.accountStartingLogin) { model.startAccountLogin() }
+                                .padding(vertical = 10.dp),
+                            contentAlignment = Alignment.Center,
+                        ) {
+                            Text(
+                                if (state.accountStartingLogin) "正在打开授权页…" else "浏览器授权登录",
+                                fontSize = 14.sp,
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color.White,
+                            )
+                        }
+                    }
+                }
+
+                if (!state.accountError.isNullOrBlank()) {
+                    Text(
+                        state.accountError,
+                        fontSize = 12.sp,
+                        color = colors.danger,
+                    )
+                }
+            }
+        }
+    }
+
+    // 2. Subscription & Credits Usage
+    if (state.accountSignedIn && overview != null) {
+        item { GroupLabel("订阅与额度") }
+        item {
+            val colors = VibexTheme.colors
+            IosSettingsCard {
+                Column(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text(
+                                overview.planDisplayName,
+                                fontSize = 15.5.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                            )
+                            val activeCount = overview.activeGrants.size
+                            Text(
+                                if (activeCount > 0) "${activeCount} 个额度包生效中" else "支持 Claude / OpenAI / Gemini 等多模型路由与云中继",
+                                fontSize = 12.sp,
+                                color = colors.textSecondary,
+                            )
+                        }
+                        Text(
+                            "充值 / 订阅",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.accent,
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(colors.accent.copy(alpha = 0.12f))
+                                .clickable { model.openAccountSitePath("/account/plan") }
+                                .padding(horizontal = 10.dp, vertical = 6.dp),
+                        )
+                    }
+                    HorizontalDivider(color = colors.hairline)
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.Bottom,
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                    ) {
+                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                            Text("可用模型路由余额", fontSize = 12.sp, color = colors.textSecondary)
+                            Text(
+                                "$${VibeXAccountRepository.formatCredits(overview.balanceMicro)}",
+                                fontSize = 22.sp,
+                                fontFamily = PlexMono,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.textPrimary,
+                            )
+                        }
+                        if (overview.activeTotalMicro > 0L) {
+                            Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(
+                                    "总额度 $${VibeXAccountRepository.formatCredits(overview.activeTotalMicro)}",
+                                    fontSize = 11.5.sp,
+                                    fontFamily = PlexMono,
+                                    color = colors.textTertiary,
+                                )
+                                Text(
+                                    "剩余 ${(overview.remainingRatio * 100).toInt()}%",
+                                    fontSize = 12.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = colors.accent,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. 30-Day Usage
+        item { GroupLabel("近 30 天模型路由用量") }
+        item {
+            val colors = VibexTheme.colors
+            val rows = overview.usage30d.byModel
+            val spent30d = rows.sumOf { it.costMicro }
+            val reqs30d = rows.sumOf { it.requests }
+            val tokens30d = rows.sumOf { it.tokens }
+            IosSettingsCard {
+                Column(
+                    Modifier.fillMaxWidth().padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        AccountMetricChip(Modifier.weight(1f), "30天消耗", "$${VibeXAccountRepository.formatCredits(spent30d)}")
+                        AccountMetricChip(Modifier.weight(1f), "请求次数", reqs30d.toString())
+                        AccountMetricChip(Modifier.weight(1f), "总 Token", VibeXAccountRepository.formatCompact(tokens30d))
+                    }
+                    if (rows.isNotEmpty()) {
+                        HorizontalDivider(color = colors.hairline)
+                        rows.take(6).forEach { row ->
+                            val modelLabel = overview.usage30d.modelNames[row.modelId] ?: row.modelId
+                            Row(
+                                Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                            ) {
+                                Text(
+                                    modelLabel,
+                                    fontSize = 12.5.sp,
+                                    fontWeight = FontWeight.Medium,
+                                    color = colors.textPrimary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.weight(1f),
+                                )
+                                Text(
+                                    "${row.requests} 次 · $${VibeXAccountRepository.formatCredits(row.costMicro)}",
+                                    fontSize = 12.sp,
+                                    fontFamily = PlexMono,
+                                    color = colors.textSecondary,
+                                )
+                            }
+                        }
+                    } else {
+                        Text("近 30 天暂无模型路由调用记录", fontSize = 12.sp, color = colors.textTertiary)
+                    }
+                }
+            }
+        }
+    }
+
+    // 4. Cloud Synced Hosts (Summary + Sync Trigger, full management in ConnectionSettings)
+    if (state.accountSignedIn) {
+        item { GroupLabel("电脑跨端云同步") }
+        item {
+            val colors = VibexTheme.colors
+            val syncedCount = maxOf(state.accountHostConfigs.size, state.accountSavedHosts.size)
+            IosSettingsCard {
+                Column(Modifier.fillMaxWidth()) {
+                    IosSettingsRow(
+                        icon = Icons.Rounded.Computer,
+                        tint = Color(0xFF007AFF),
+                        title = "管理已配对与云端同步的电脑",
+                        subtitle = if (syncedCount > 0) {
+                            "账号下已关联 $syncedCount 台电脑，支持局域网与云服务自动切换"
+                        } else {
+                            "在桌面端登录同一账号或扫码配对后自动跨设备同步"
+                        },
+                        onClick = { onOpen(SettingsSection.Connection) },
+                    )
+                    HorizontalDivider(color = colors.hairline)
+                    Row(
+                        Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !state.accountSyncingHosts) { model.syncAccountHosts(forcePush = true) }
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Text(
+                            if (state.accountSyncingHosts) "正在同步已配对电脑…" else "立即同步账号下的电脑",
+                            fontSize = 13.5.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = colors.accent,
+                        )
+                    }
+                }
+            }
+        }
+    }
+
+    // 5. Security, Seats, Billing & Local Collaboration Profile Links
+    item { GroupLabel("安全、账单与个人偏好") }
+    item {
+        IosSettingsCard {
+            IosSettingsRow(
+                icon = Icons.Rounded.Verified,
+                tint = Color(0xFFFF9500),
+                title = "通行密钥与账号安全",
+                subtitle = "管理 Passkey、登录设备与双重验证",
+                onClick = { model.openAccountSitePath("/account/security") },
+            )
+            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 56.dp))
+            IosSettingsRow(
+                icon = Icons.Rounded.Groups,
+                tint = Color(0xFF007AFF),
+                title = "团队与协作席位",
+                subtitle = "管理团队成员席位与共享额度",
+                onClick = { model.openAccountSitePath("/account") },
+            )
+            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 56.dp))
+            IosSettingsRow(
+                icon = Icons.Rounded.Dns,
+                tint = Color(0xFFAF52DE),
+                title = "账单与兑换码记录",
+                subtitle = "查看历史订单、充值明细与额度兑换",
+                onClick = { model.openAccountSitePath("/account/billing") },
+            )
+            HorizontalDivider(color = VibexTheme.colors.hairline, modifier = Modifier.padding(start = 56.dp))
+            IosSettingsRow(
+                icon = Icons.Rounded.AutoAwesome,
+                tint = Color(0xFF5856D6),
+                title = "协作空间个人形象与昵称",
+                subtitle = "自定义本机在多智能体协作空间中的显示名与头像配色",
+                onClick = { onOpen(SettingsSection.Profile) },
+            )
+        }
+    }
+
+    if (state.accountSignedIn) {
+        item {
+            val colors = VibexTheme.colors
+            IosSettingsCard {
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .clickable(enabled = !state.accountSigningOut) { model.signOutAccount() }
+                        .padding(vertical = 13.dp),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Text(
+                        if (state.accountSigningOut) "正在退出…" else "退出 VibeX 账号",
+                        fontSize = 15.sp,
+                        fontWeight = FontWeight.SemiBold,
+                        color = colors.danger,
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun AccountMetricChip(modifier: Modifier = Modifier, title: String, value: String) {
+    val colors = VibexTheme.colors
+    Column(
+        modifier
+            .clip(RoundedCornerShape(8.dp))
+            .background(colors.segmentedTrack)
+            .padding(horizontal = 10.dp, vertical = 8.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(title, fontSize = 11.sp, color = colors.textSecondary)
+        Text(value, fontSize = 14.sp, fontFamily = PlexMono, fontWeight = FontWeight.Bold, color = colors.textPrimary)
     }
 }
 

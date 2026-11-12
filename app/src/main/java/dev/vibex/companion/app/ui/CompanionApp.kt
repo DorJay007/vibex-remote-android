@@ -222,7 +222,27 @@ private fun CompanionShell(state: UiState, model: CompanionModel) {
     val manualConnectNeeded = hasServer && !state.autoConnect && state.connection == ConnectionState.Offline
     val showConnectGate = !hasServer || authExpired || manualConnectNeeded
 
+    val activeOpenConvId = (state.route as? Route.Timeline)?.conversationId
+    val inlineToast = state.activeAttentionToast?.takeIf { toast ->
+        toast.conversationId != activeOpenConvId
+    }
     val hostNotices: @Composable () -> Unit = {
+        CompanionToastOverlay(
+            toast = inlineToast,
+            actionBusy = state.attentionActionBusy,
+            actionError = state.attentionActionError,
+            onDismiss = { model.dismissAttentionToast() },
+            onOpenConversation = { convId -> model.openConversation(convId) },
+            onRespondPermission = { convId, permId, optId ->
+                model.respondToastPermission(convId, permId, optId)
+            },
+            onRespondQuestion = { convId, question, choice, fallbackText ->
+                model.respondToastQuestion(convId, question, choice, fallbackText)
+            },
+            onSendQuickReply = { toast, text ->
+                model.sendToastQuickReply(toast, text)
+            },
+        )
         state.error?.let { HostBanner(it, hostBannerSeverity(it)) { model.dismissNotice() } }
         state.notice?.let { HostBanner(it, NoticeSeverity.Info) { model.dismissNotice() } }
     }

@@ -565,12 +565,7 @@ private fun ColumnsBoardContent(
     val pullOffsetDp = with(density) { pullOffsetPx.toDp() }
 
     if (isLoading && activeSessions.isEmpty()) {
-        Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                CircularProgressIndicator(color = colors.accent)
-                Text("正在加载会话看板...", fontSize = 13.sp, color = colors.textSecondary)
-            }
-        }
+        KanbanBoardSkeletonView(modifier = Modifier.fillMaxSize())
         return
     }
 
@@ -1050,12 +1045,7 @@ private fun KanbanUsageDashboardView(
                 isLoadingPlan = isLoadingPlan,
             )
         } else if (isLoading && statistics == null) {
-            Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    CircularProgressIndicator(color = colors.accent)
-                    Text("正在加载计量统计…", fontSize = 13.sp, color = colors.textSecondary)
-                }
-            }
+            KanbanBoardSkeletonView(modifier = Modifier.fillMaxSize())
         } else if (errorMessage != null && statistics == null) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 EmptyState(

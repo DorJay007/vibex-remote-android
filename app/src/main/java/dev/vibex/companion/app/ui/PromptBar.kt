@@ -14,6 +14,7 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -27,6 +28,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -42,9 +44,12 @@ import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.PhotoCamera
 import androidx.compose.material.icons.rounded.PhotoLibrary
 import androidx.compose.material.icons.rounded.VerifiedUser
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -85,9 +90,9 @@ import dev.vibex.companion.bundledAgentAsset
 import dev.vibex.companion.app.ui.theme.VibexTheme
 import kotlin.math.roundToInt
 
-enum class ComposerMenu { Plus, Model, Effort }
+enum class ComposerMenu { Plus, Agent, Model, Effort }
 
-private enum class PlusPanel { Grid, Model, Mode, Permission }
+private enum class PlusPanel { Grid, Agent, Model, Mode, Permission }
 
 private val SparkColor = Color(red = 0.62f, green = 0.30f, blue = 0.96f)
 private val WarningOrange = Color(0xFFFF9500)
@@ -130,6 +135,9 @@ fun PromptBar(
     agentId: String,
     agent: CatalogAgent? = null,
     agents: List<CatalogAgent> = emptyList(),
+    showAgentSelector: Boolean = false,
+    onSelectAgent: ((String) -> Unit)? = null,
+    onAddCustomModel: ((String) -> Unit)? = null,
     modes: List<SessionMode>,
     currentModeId: String,
     configOptions: List<SessionConfigOption>,
@@ -146,15 +154,21 @@ fun PromptBar(
     val colors = VibexTheme.colors
     val focusManager = LocalFocusManager.current
     var plusPanel by remember { mutableStateOf(PlusPanel.Grid) }
+    var showCustomModelDialog by remember { mutableStateOf(false) }
+    var customModelDraft by remember { mutableStateOf("") }
 
     val modelOption = remember(configOptions) { findModelOption(configOptions) }
     val effortOption = remember(configOptions) { findEffortOption(configOptions) }
     val permissionOption = remember(configOptions) { findPermissionOption(configOptions) }
 
+    val agentLabel = remember(agent, agentId) {
+        agent?.displayName?.takeIf { it.isNotBlank() }
+            ?: agentDisplayName(agentId, "")
+    }
+
     val modelName = remember(modelOption, agent, agentId) {
         modelOption?.currentLabel?.takeIf { it.isNotBlank() }
-            ?: agent?.displayName?.takeIf { it.isNotBlank() }
-            ?: agentDisplayName(agentId, "")
+            ?: "默认模型"
     }
 
     val effortAtMax = remember(effortOption) {
@@ -201,7 +215,37 @@ fun PromptBar(
         ) {
             // Menus above dock (never overlap the input dock)
             AnimatedVisibility(
-                visible = menu == ComposerMenu.Model && modelOption != null && modelOption.choices.size > 1,
+                visible = menu == ComposerMenu.Agent && showAgentSelector && agents.isNotEmpty(),
+                enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
+                exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
+            ) {
+                MenuList(
+                    title = "选择 AI Agent",
+                    choices = agents.map { a ->
+                        SessionConfigChoice(
+                            value = a.id,
+                            label = agentDisplayName(a.id, a.displayName),
+                        )
+                    },
+                    selected = agentId,
+                    leading = { choice ->
+                        val rowAgent = agents.find { it.id.equals(choice.value, ignoreCase = true) }
+                        AgentAvatar(
+                            agentId = choice.value,
+                            size = 16.dp,
+                            iconSvg = rowAgent?.iconSvg,
+                            displayName = rowAgent?.displayName?.ifBlank { choice.label } ?: choice.label,
+                        )
+                    },
+                    onSelect = { value ->
+                        onSelectAgent?.invoke(value)
+                        onMenuChange(null)
+                    },
+                )
+            }
+
+            AnimatedVisibility(
+                visible = menu == ComposerMenu.Model && modelOption != null && (modelOption.choices.isNotEmpty() || onAddCustomModel != null),
                 enter = expandVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeIn(),
                 exit = shrinkVertically(animationSpec = spring(dampingRatio = 0.86f)) + fadeOut(),
             ) {
@@ -231,6 +275,15 @@ fun PromptBar(
                         onSelect = { value ->
                             onSelectOption(modelOption.key, value)
                             onMenuChange(null)
+                        },
+                        onAddCustomModel = if (onAddCustomModel != null) {
+                            {
+                                onMenuChange(null)
+                                customModelDraft = ""
+                                showCustomModelDialog = true
+                            }
+                        } else {
+                            null
                         },
                     )
                 }
@@ -346,48 +399,84 @@ fun PromptBar(
                             },
                         )
 
-                        // Model Pill
-                        PickPill(
-                            label = modelName,
-                            open = menu == ComposerMenu.Model,
-                            enabled = (modelOption?.choices?.size ?: 0) > 1,
-                            leading = {
-                                AgentAvatar(
-                                    agentId = agentId,
-                                    size = 14.dp,
-                                    iconSvg = agent?.iconSvg,
-                                    displayName = agent?.displayName.orEmpty(),
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            // 1. Optional AI Agent Pill (shown on New Conversation Landing)
+                            if (showAgentSelector && agents.isNotEmpty()) {
+                                PickPill(
+                                    label = agentLabel,
+                                    open = menu == ComposerMenu.Agent,
+                                    enabled = agents.size > 1,
+                                    leading = {
+                                        AgentAvatar(
+                                            agentId = agentId,
+                                            size = 14.dp,
+                                            iconSvg = agent?.iconSvg,
+                                            displayName = agentLabel,
+                                        )
+                                    },
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        onMenuChange(if (menu == ComposerMenu.Agent) null else ComposerMenu.Agent)
+                                    },
                                 )
-                            },
-                            onClick = {
-                                focusManager.clearFocus()
-                                onMenuChange(if (menu == ComposerMenu.Model) null else ComposerMenu.Model)
-                            },
-                        )
+                            }
 
-                        // Effort Pill
-                        if (effortOption != null) {
+                            // 2. Model Pill
                             PickPill(
-                                label = effortOption.currentLabel,
-                                open = menu == ComposerMenu.Effort,
-                                enabled = effortOption.choices.size > 1,
-                                tint = if (effortAtMax) SparkColor else null,
+                                label = modelName,
+                                open = menu == ComposerMenu.Model,
+                                enabled = (modelOption?.choices?.size ?: 0) >= 1 || onAddCustomModel != null,
                                 leading = {
-                                    Icon(
-                                        imageVector = Icons.Rounded.AutoAwesome,
-                                        contentDescription = null,
-                                        tint = if (effortAtMax) SparkColor else colors.textSecondary,
-                                        modifier = Modifier.size(12.dp),
-                                    )
+                                    if (showAgentSelector) {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = colors.textSecondary,
+                                            modifier = Modifier.size(12.dp),
+                                        )
+                                    } else {
+                                        AgentAvatar(
+                                            agentId = agentId,
+                                            size = 14.dp,
+                                            iconSvg = agent?.iconSvg,
+                                            displayName = agent?.displayName.orEmpty(),
+                                        )
+                                    }
                                 },
                                 onClick = {
                                     focusManager.clearFocus()
-                                    onMenuChange(if (menu == ComposerMenu.Effort) null else ComposerMenu.Effort)
+                                    onMenuChange(if (menu == ComposerMenu.Model) null else ComposerMenu.Model)
                                 },
                             )
-                        }
 
-                        Spacer(modifier = Modifier.weight(1f))
+                            // 3. Effort Pill
+                            if (effortOption != null) {
+                                PickPill(
+                                    label = effortOption.currentLabel,
+                                    open = menu == ComposerMenu.Effort,
+                                    enabled = effortOption.choices.size > 1,
+                                    tint = if (effortAtMax) SparkColor else null,
+                                    leading = {
+                                        Icon(
+                                            imageVector = Icons.Rounded.AutoAwesome,
+                                            contentDescription = null,
+                                            tint = if (effortAtMax) SparkColor else colors.textSecondary,
+                                            modifier = Modifier.size(12.dp),
+                                        )
+                                    },
+                                    onClick = {
+                                        focusManager.clearFocus()
+                                        onMenuChange(if (menu == ComposerMenu.Effort) null else ComposerMenu.Effort)
+                                    },
+                                )
+                            }
+                        }
 
                         SendButton(
                             ready = canSend,
@@ -480,6 +569,22 @@ fun PromptBar(
                                         }
                                     }
 
+                                    PlusPanel.Agent -> {
+                                        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                            PlusSubpanelHeader(title = "选择 AI Agent") { plusPanel = PlusPanel.Grid }
+                                            DrawerChoiceList(
+                                                choices = agents.map { a ->
+                                                    SessionConfigChoice(a.id, agentDisplayName(a.id, a.displayName))
+                                                },
+                                                selected = agentId,
+                                                onSelect = { id ->
+                                                    onSelectAgent?.invoke(id)
+                                                    onMenuChange(null)
+                                                },
+                                            )
+                                        }
+                                    }
+
                                     PlusPanel.Model -> {
                                         Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                                             PlusSubpanelHeader(title = "选择模型") { plusPanel = PlusPanel.Grid }
@@ -508,6 +613,15 @@ fun PromptBar(
                                                     onSelect = { v ->
                                                         onSelectOption(modelOption.key, v)
                                                         onMenuChange(null)
+                                                    },
+                                                    onAddCustomModel = if (onAddCustomModel != null) {
+                                                        {
+                                                            onMenuChange(null)
+                                                            customModelDraft = ""
+                                                            showCustomModelDialog = true
+                                                        }
+                                                    } else {
+                                                        null
                                                     },
                                                 )
                                             } else {
@@ -576,6 +690,46 @@ fun PromptBar(
                     }
                 }
             }
+        }
+        if (showCustomModelDialog) {
+            AlertDialog(
+                onDismissRequest = { showCustomModelDialog = false },
+                title = { Text("自定义 / 中转模型") },
+                text = {
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text(
+                            "输入桌面端中转服务或网关支持的模型 ID：",
+                            fontSize = 13.sp,
+                            color = colors.textSecondary,
+                        )
+                        OutlinedTextField(
+                            value = customModelDraft,
+                            onValueChange = { customModelDraft = it },
+                            placeholder = { Text("例如 claude-opus-4-8 / deepseek-r1") },
+                            singleLine = true,
+                            modifier = Modifier.fillMaxWidth(),
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            val trimmed = customModelDraft.trim()
+                            showCustomModelDialog = false
+                            if (trimmed.isNotEmpty()) {
+                                onAddCustomModel?.invoke(trimmed)
+                            }
+                        },
+                    ) {
+                        Text("使用该模型")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showCustomModelDialog = false }) {
+                        Text("取消")
+                    }
+                },
+            )
         }
     }
 }
@@ -850,17 +1004,19 @@ private fun PickPill(
                 else Modifier,
             )
             .clickable(enabled = enabled, onClick = onClick)
-            .padding(horizontal = 10.dp),
-        horizontalArrangement = Arrangement.spacedBy(5.dp),
+            .padding(horizontal = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         leading()
         Text(
             text = label,
-            fontSize = 12.5.sp,
+            fontSize = 12.sp,
             fontWeight = FontWeight.Medium,
             color = tint ?: colors.textPrimary,
             maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+            modifier = Modifier.widthIn(max = 110.dp),
         )
         if (enabled) {
             Icon(
@@ -887,7 +1043,7 @@ private fun SendButton(
         modifier = Modifier
             .size(30.dp)
             .clip(CircleShape)
-            .background(if (active) colors.textPrimary else colors.textPrimary.copy(alpha = 0.07f))
+            .background(if (active) colors.textPrimary else colors.textPrimary.copy(alpha = if (colors.isDark) 0.16f else 0.11f))
             .clickable(enabled = active, onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -949,13 +1105,14 @@ private fun DrawerChoiceList(
     selected: String,
     leading: (@Composable (SessionConfigChoice) -> Unit)? = null,
     onSelect: (String) -> Unit,
+    onAddCustomModel: (() -> Unit)? = null,
 ) {
     val colors = VibexTheme.colors
     val shape = RoundedCornerShape(14.dp)
     Column(
         modifier = Modifier
             .fillMaxWidth()
-            .heightIn(max = 228.dp)
+            .heightIn(max = 248.dp)
             .clip(shape)
             .background(colors.bg.copy(alpha = 0.65f))
             .verticalScroll(rememberScrollState())
@@ -993,6 +1150,32 @@ private fun DrawerChoiceList(
                 }
             }
         }
+        if (onAddCustomModel != null) {
+            HorizontalDivider(thickness = 0.5.dp, color = colors.stroke, modifier = Modifier.padding(vertical = 2.dp))
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(10.dp))
+                    .clickable { onAddCustomModel() }
+                    .padding(horizontal = 12.dp, vertical = 9.dp),
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Icon(
+                    imageVector = Icons.Rounded.Add,
+                    contentDescription = null,
+                    tint = colors.accent,
+                    modifier = Modifier.size(16.dp),
+                )
+                Text(
+                    text = "自定义 / 中转模型…",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Medium,
+                    color = colors.accent,
+                    modifier = Modifier.weight(1f),
+                )
+            }
+        }
     }
 }
 
@@ -1003,13 +1186,14 @@ private fun MenuList(
     selected: String,
     leading: (@Composable (SessionConfigChoice) -> Unit)? = null,
     onSelect: (String) -> Unit,
+    onAddCustomModel: (() -> Unit)? = null,
 ) {
     val colors = VibexTheme.colors
     val shape = RoundedCornerShape(18.dp)
 
     Column(
         modifier = Modifier
-            .width(250.dp)
+            .width(260.dp)
             .shadow(20.dp, shape, ambientColor = Color.Black.copy(alpha = 0.14f), spotColor = Color.Black.copy(alpha = 0.14f))
             .clip(shape)
             .background(colors.card)
@@ -1026,7 +1210,7 @@ private fun MenuList(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .heightIn(max = 260.dp)
+                .heightIn(max = 280.dp)
                 .verticalScroll(rememberScrollState())
                 .padding(6.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp),
@@ -1062,6 +1246,32 @@ private fun MenuList(
                             modifier = Modifier.size(15.dp),
                         )
                     }
+                }
+            }
+            if (onAddCustomModel != null) {
+                HorizontalDivider(thickness = 0.5.dp, color = colors.stroke, modifier = Modifier.padding(vertical = 2.dp))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(11.dp))
+                        .clickable { onAddCustomModel() }
+                        .padding(horizontal = 10.dp, vertical = 9.dp),
+                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(
+                        imageVector = Icons.Rounded.Add,
+                        contentDescription = null,
+                        tint = colors.accent,
+                        modifier = Modifier.size(16.dp),
+                    )
+                    Text(
+                        text = "自定义 / 中转模型…",
+                        fontSize = 13.5.sp,
+                        fontWeight = FontWeight.Medium,
+                        color = colors.accent,
+                        modifier = Modifier.weight(1f),
+                    )
                 }
             }
         }

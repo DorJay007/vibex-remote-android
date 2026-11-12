@@ -91,6 +91,7 @@ fun TimelinePane(
     state: UiState,
     model: CompanionModel,
     conversationId: String,
+    onBack: (() -> Unit)? = null,
 ) {
     val colors = VibexTheme.colors
     val focusManager = LocalFocusManager.current
@@ -228,7 +229,9 @@ fun TimelinePane(
                     .clip(CircleShape)
                     .background(colors.card)
                     .border(0.6.dp, colors.textPrimary.copy(alpha = 0.08f), CircleShape)
-                    .clickable { model.openNewChatLanding() },
+                    .clickable {
+                        if (onBack != null) onBack() else model.openNewChatLanding()
+                    },
                 contentAlignment = Alignment.Center,
             ) {
                 Icon(
@@ -375,12 +378,7 @@ fun TimelinePane(
                 },
         ) {
             if (view == null) {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    LoadingState(label = "正在同步对话")
-                }
+                TimelineSkeletonView()
             } else if (items.isEmpty() && !isTurnRunning) {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -521,6 +519,17 @@ fun TimelinePane(
             agentId = agentId,
             agent = agent,
             agents = state.catalog?.agents.orEmpty(),
+            onAddCustomModel = { rawModel ->
+                val trimmed = rawModel.trim()
+                if (trimmed.isNotEmpty()) {
+                    val modelKey = configOptions.firstOrNull {
+                        val k = it.key.lowercase()
+                        val c = it.category.lowercase()
+                        c == "model" || k == "model" || k.contains("model")
+                    }?.key ?: "model"
+                    model.setSessionConfig(conversationId, modelKey, trimmed)
+                }
+            },
             modes = modes,
             currentModeId = currentModeId,
             configOptions = configOptions,

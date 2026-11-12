@@ -159,22 +159,24 @@ class HostApi(
                 val ready = obj.boolOrNull("ready") ?: true
                 val lifecycle = obj.textAny("lifecycle")
                 val authentication = obj.textAny("authentication")
+                val agentId = obj.textAny("id")
+                val parsedConfig = parseJsonOptions(
+                    obj,
+                    "sessionConfigJson",
+                    "session_config_json",
+                    "sessionConfig",
+                    "session_config",
+                    "configOptions",
+                    "config_options",
+                    "controls",
+                )
                 CatalogAgent(
-                    id = obj.textAny("id"),
+                    id = agentId,
                     ready = ready,
                     displayName = obj.textAny("displayName", "display_name", "name"),
                     iconSvg = obj.textAny("iconSvg", "icon_svg"),
                     currentModeId = parseCurrentMode(obj),
-                    sessionConfig = parseJsonOptions(
-                        obj,
-                        "sessionConfigJson",
-                        "session_config_json",
-                        "sessionConfig",
-                        "session_config",
-                        "configOptions",
-                        "config_options",
-                        "controls",
-                    ),
+                    sessionConfig = ensureAgentDefaultOptions(agentId, parsedConfig),
                     sessionModes = parseJsonModes(
                         obj,
                         "sessionModesJson",
@@ -1090,6 +1092,115 @@ private fun unwrapObject(node: JsonValue?): JsonValue.Object? = when (node) {
     is JsonValue.Object -> node
     is JsonValue.Text -> runCatching { JsonValue.parse(node.value) }.getOrNull()?.asObject()
     else -> null
+}
+
+fun fallbackModelOptionForAgent(agentId: String): SessionConfigOption {
+    val lower = agentId.lowercase()
+    return when {
+        lower.contains("claude") -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "default",
+            choices = listOf(
+                SessionConfigChoice("default", "Default (推荐)"),
+                SessionConfigChoice("opus", "Claude Opus 4.7"),
+                SessionConfigChoice("sonnet", "Claude Sonnet 4.6"),
+                SessionConfigChoice("haiku", "Claude Haiku 4.5"),
+                SessionConfigChoice("claude-opus-4-8", "Claude Opus 4.8 (中转)"),
+                SessionConfigChoice("claude-sonnet-5", "Claude Sonnet 5 (中转)"),
+                SessionConfigChoice("claude-haiku-5-5", "Claude Haiku 5.5 (中转)"),
+            ),
+        )
+        lower.contains("codex") || lower.contains("openai") -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "gpt-5.4",
+            choices = listOf(
+                SessionConfigChoice("gpt-5.4", "GPT-5.4"),
+                SessionConfigChoice("gpt-5.3-codex", "GPT-5.3-Codex"),
+                SessionConfigChoice("gpt-5.4-mini", "GPT-5.4-Mini"),
+                SessionConfigChoice("gpt-6-sol", "GPT-6-Sol (中转)"),
+            ),
+        )
+        lower.contains("gemini") || lower.contains("antigravity") -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "gemini-2.5-pro",
+            choices = listOf(
+                SessionConfigChoice("gemini-2.5-pro", "Gemini 2.5 Pro"),
+                SessionConfigChoice("gemini-2.5-flash", "Gemini 2.5 Flash"),
+            ),
+        )
+        lower.contains("kimi") -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "kimi-k2",
+            choices = listOf(
+                SessionConfigChoice("kimi-k2", "Kimi K2"),
+                SessionConfigChoice("kimi-latest", "Kimi Latest"),
+            ),
+        )
+        lower.contains("deepseek") -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "deepseek-reasoner",
+            choices = listOf(
+                SessionConfigChoice("deepseek-reasoner", "DeepSeek R1"),
+                SessionConfigChoice("deepseek-chat", "DeepSeek V3"),
+            ),
+        )
+        else -> SessionConfigOption(
+            key = "model",
+            label = "模型",
+            category = "model",
+            value = "default",
+            choices = listOf(
+                SessionConfigChoice("default", "默认模型"),
+            ),
+        )
+    }
+}
+
+private fun ensureAgentDefaultOptions(
+    agentId: String,
+    options: List<SessionConfigOption>,
+): List<SessionConfigOption> {
+    val result = options.toMutableList()
+    val hasModel = result.any {
+        val k = it.key.lowercase()
+        val c = it.category.lowercase()
+        (c == "model" || k == "model" || k.contains("model")) && it.choices.isNotEmpty()
+    }
+    if (!hasModel) {
+        result.add(0, fallbackModelOptionForAgent(agentId))
+    }
+    val hasEffort = result.any {
+        val k = it.key.lowercase()
+        val c = it.category.lowercase()
+        c.contains("thought") || c.contains("effort") || c.contains("reason") ||
+            k.contains("thought") || k.contains("effort") || k.contains("thinking") || k.contains("reason")
+    }
+    if (!hasEffort) {
+        result.add(
+            SessionConfigOption(
+                key = "reasoning_effort",
+                label = "推理强度",
+                category = "thought_level",
+                value = "medium",
+                choices = listOf(
+                    SessionConfigChoice("low", "低"),
+                    SessionConfigChoice("medium", "中"),
+                    SessionConfigChoice("high", "高"),
+                ),
+            ),
+        )
+    }
+    return result
 }
 
 fun encodeObject(map: Map<String, Any?>): String = encodeValue(map).encode()

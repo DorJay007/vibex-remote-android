@@ -81,7 +81,31 @@ import dev.vibex.companion.app.data.ProfileStore
 import dev.vibex.companion.app.data.StoredReachability
 import dev.vibex.companion.app.data.StoredState
 import dev.vibex.companion.app.data.StreamDisplayPrefs
+import dev.vibex.companion.app.data.VibeXAccountException
+import dev.vibex.companion.app.data.VibeXAccountHostConfigItem
+import dev.vibex.companion.app.data.VibeXAccountOverview
+import dev.vibex.companion.app.data.VibeXAccountRepository
+import dev.vibex.companion.app.data.VibeXDeviceLogin
+import dev.vibex.companion.app.data.VibeXSyncableHostProfile
+import android.content.Intent
+import android.net.Uri
+import java.time.Instant
+import dev.vibex.companion.PendingQuestion
+import dev.vibex.companion.PermissionAllowScope
+import dev.vibex.companion.PermissionOption
+import dev.vibex.companion.PermissionPrompt
+import dev.vibex.companion.PlanTask
+import dev.vibex.companion.QuestionAnswer
+import dev.vibex.companion.QuestionChoice
+import dev.vibex.companion.QuestionForm
+import dev.vibex.companion.app.monitor.AttentionToastKind
+import dev.vibex.companion.app.monitor.CompanionAttentionToast
+import dev.vibex.companion.app.monitor.CompanionMonitorService
+import dev.vibex.companion.app.monitor.SystemIslandOverlayController
+import dev.vibex.companion.app.monitor.SystemNotificationAction
 import dev.vibex.companion.app.monitor.SystemNotifier
+import dev.vibex.companion.app.monitor.TaskLiveActivityState
+import dev.vibex.companion.app.monitor.VibeXActivityPhase
 import dev.vibex.companion.app.ui.theme.Appearance
 import dev.vibex.companion.app.ui.theme.AccentChoice
 import dev.vibex.companion.app.net.EventSocket
@@ -114,8 +138,12 @@ data class UiState(
     val sinceDays: Int = 3,
     val error: String? = null,
     val notice: String? = null,
+    val activeAttentionToast: CompanionAttentionToast? = null,
+    val attentionActionBusy: Boolean = false,
+    val attentionActionError: String? = null,
+    val liveActivity: TaskLiveActivityState? = null,
     val pairing: Boolean = false,
-    val monitor: Boolean = false,
+    val monitor: Boolean = true,
     val appearance: Appearance = Appearance.System,
     val accent: AccentChoice = AccentChoice.Blue,
     val streamDisplay: StreamDisplayPrefs = StreamDisplayPrefs(),
@@ -148,10 +176,20 @@ data class UiState(
     val pendingCloudFallbackOrigin: String? = null,
     val pendingCloudFallbackHostName: String? = null,
     val autoConnect: Boolean = true,
+    val accountSignedIn: Boolean = false,
+    val accountOverview: VibeXAccountOverview? = null,
+    val accountHostConfigs: List<VibeXAccountHostConfigItem> = emptyList(),
+    val accountSavedHosts: List<VibeXSyncableHostProfile> = emptyList(),
+    val accountLoading: Boolean = false,
+    val accountSyncingHosts: Boolean = false,
+    val accountStartingLogin: Boolean = false,
+    val accountSigningOut: Boolean = false,
+    val accountLoginState: VibeXDeviceLogin? = null,
+    val accountError: String? = null,
     val route: Route = Route.Conversations,
 )
 
-enum class SettingsSection { Profile, Connection, Extensions, Font, Notification, About }
+enum class SettingsSection { Profile, Account, Connection, Extensions, Font, Notification, About }
 
 sealed class Route {
     data object Onboarding : Route()
@@ -177,6 +215,8 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val profiles = ProfileStore(application)
     private val credentials = CredentialStore(application)
     private val offline = OfflineStore(application)
+    private val accountRepo = VibeXAccountRepository(application)
+    private var accountLoginPollJob: Job? = null
     private val transport = OkHttpTransport()
     private val api = HostApi(transport)
     private val pairingClient = PairingClient(transport)
@@ -194,6 +234,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     private val notifiedEventKeys = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val knownConversationIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
     private val locallyCreatedConversationIds = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val wasRunningByConversation = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+    private val initializedConversations = java.util.concurrent.ConcurrentHashMap.newKeySet<String>()
+    private val liveRunStartMsByConversation = java.util.concurrent.ConcurrentHashMap<String, Long>()
+    private val livePeakProgressByConversation = java.util.concurrent.ConcurrentHashMap<String, Float>()
+    private var liveActivityLingerJob: Job? = null
+    @Volatile
+    private var activeLiveConversationId: String? = null
     @Volatile
     private var didSeedKnownConversations: Boolean = false
     @Volatile
@@ -219,6 +266,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         val savedAutoConnect = prefs.getBoolean("auto_connect", true)
         val selectedHostId = stored.selectedHostId ?: stored.profiles.firstOrNull()?.hostId
         val selected = stored.profiles.find { it.hostId == selectedHostId }
+        val hasAccountToken = accountRepo.getToken() != null
         _state.value = UiState(
             profiles = stored.profiles,
             selectedHostId = selectedHostId,
@@ -227,16 +275,87 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             accent = if (stored.accent == AccentChoice.Ink) AccentChoice.Blue else stored.accent,
             streamDisplay = stored.streamDisplay,
             autoConnect = savedAutoConnect,
+            accountSignedIn = hasAccountToken,
             route = Route.Conversations,
             connection = if (stored.profiles.isEmpty() || !savedAutoConnect) ConnectionState.Offline else ConnectionState.Connecting,
             connectionFailureReason = if (!savedAutoConnect && stored.profiles.isNotEmpty()) "自动连接已关闭" else null,
         )
+        if (hasAccountToken) {
+            refreshAccount()
+        }
         if (stored.profiles.isNotEmpty() && savedAutoConnect) {
             connectSelected()
         } else {
             discoverHosts(autoRequestIfSingle = false, modeOverride = "lan")
         }
         startAutoReconnectLoop()
+        SystemIslandOverlayController.onDismissToast = { dismissAttentionToast() }
+        SystemIslandOverlayController.onDismissIsland = { dismissLiveActivityOverlay() }
+        SystemIslandOverlayController.onRespondPermission = { convId, permId, optId ->
+            respondToastPermission(convId, permId, optId)
+        }
+        SystemIslandOverlayController.onRespondQuestion = { convId, question, choice, fallbackText ->
+            respondToastQuestion(convId, question, choice, fallbackText)
+        }
+        SystemIslandOverlayController.onSendQuickReply = { toast, text ->
+            sendToastQuickReply(toast, text)
+        }
+    }
+
+    private fun syncSystemIslandOverlay() {
+        val current = _state.value
+        SystemIslandOverlayController.updateState(
+            context = getApplication(),
+            liveActivity = current.liveActivity,
+            toast = current.activeAttentionToast,
+            busy = current.attentionActionBusy,
+            error = current.attentionActionError,
+        )
+    }
+
+    fun onAppForegroundChanged(inForeground: Boolean) {
+        if (inForeground) {
+            // If the live activity was only a temporary background standby pill, clear it on return
+            val currentLive = _state.value.liveActivity
+            if (currentLive != null && currentLive.stageTitle == "后台守护中") {
+                _state.update { it.copy(liveActivity = null) }
+            }
+            syncSystemIslandOverlay()
+            return
+        }
+        // Entering background (exited app to Home screen / other apps)
+        if (_state.value.liveActivity == null) {
+            val activeId = currentObservedConversationId() ?: _state.value.conversations.firstOrNull()?.id
+            val session = activeId?.let { sessions[it] }
+            if (session != null) {
+                syncSessionAttentionAndLiveActivity(session, isFirstSnapshot = false)
+            }
+            if (_state.value.liveActivity == null && !activeId.isNullOrBlank()) {
+                val summary = _state.value.conversations.find { it.id == activeId }
+                val title = session?.title?.ifBlank { null }
+                    ?: summary?.title?.ifBlank { null }
+                    ?: "当前会话"
+                val wsId = session?.workspaceId?.ifBlank { null }
+                    ?: summary?.workspaceId.orEmpty()
+                val project = resolveProjectName(wsId)
+                val standby = TaskLiveActivityState(
+                    conversationId = activeId,
+                    projectName = project,
+                    conversationTitle = title,
+                    phase = VibeXActivityPhase.Thinking,
+                    stageTitle = "后台守护中",
+                    stageSubtitle = "VibeX 正在后台实时监听任务进展，点按返回会话",
+                    progress = 0.18f,
+                    completed = 0,
+                    total = 0,
+                    stepCount = session?.rows?.count { it.kind == "tool" } ?: 0,
+                    isRunning = true,
+                    startedAtMs = System.currentTimeMillis(),
+                )
+                _state.update { it.copy(liveActivity = standby) }
+            }
+        }
+        syncSystemIslandOverlay()
     }
 
     fun setAutoConnect(enabled: Boolean) {
@@ -351,6 +470,17 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 p.lastSuccessOrigin?.let { knownRelayOrigins.add(it) }
                 if (p.hostId.isNotBlank() && !p.hostId.startsWith("host:") && relayBase.isNotEmpty()) {
                     knownRelayOrigins.add("$relayBase/t/${p.hostId}")
+                }
+            }
+            _state.value.accountHostConfigs.forEach { h ->
+                if (h.hostId.isNotBlank() && !h.hostId.startsWith("host:") && relayBase.isNotEmpty()) {
+                    knownRelayOrigins.add("$relayBase/t/${h.hostId}")
+                }
+            }
+            _state.value.accountSavedHosts.forEach { s ->
+                if (s.origin.isNotBlank()) knownRelayOrigins.add(s.origin)
+                if (s.hostId.isNotBlank() && !s.hostId.startsWith("host:") && relayBase.isNotEmpty()) {
+                    knownRelayOrigins.add("$relayBase/t/${s.hostId}")
                 }
             }
             val useCloud = mode == "cloud"
@@ -708,6 +838,15 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
             credentials.remove(profile.hostId)
             val remaining = _state.value.profiles.filterNot { it.hostId == profile.hostId }
             persist { it.copy(selectedHostId = remaining.firstOrNull()?.hostId, profiles = remaining) }
+            if (_state.value.accountSignedIn) {
+                runCatching {
+                    accountRepo.deleteSavedHost(
+                        profileId = profile.deviceId.ifBlank { profile.hostId },
+                        hostId = profile.hostId,
+                        origin = origin.orEmpty(),
+                    )
+                }
+            }
             socket.close()
             _state.update {
                 it.copy(
@@ -730,7 +869,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(route = Route.Conversations, timeline = null) }
     }
 
+    private var activeInlineConversationId: String? = null
+
+    private fun currentObservedConversationId(): String? =
+        (_state.value.route as? Route.Timeline)?.conversationId ?: activeInlineConversationId
+
     fun openConversation(id: String) {
+        activeInlineConversationId = null
         userRequestedNewChatLanding = false
         hasAutoOpenedInitialConversation = true
         _state.update { it.copy(route = Route.Timeline(id), timeline = sessions[id]?.snapshot()) }
@@ -738,11 +883,27 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         startTimelinePoller(id)
     }
 
+    fun openInlineConversation(id: String) {
+        activeInlineConversationId = id
+        _state.update { it.copy(timeline = sessions[id]?.snapshot()) }
+        viewModelScope.launch { attachConversation(id) }
+        startTimelinePoller(id)
+    }
+
+    fun closeInlineConversation() {
+        val wasInline = activeInlineConversationId
+        activeInlineConversationId = null
+        if ((_state.value.route as? Route.Timeline)?.conversationId == null && wasInline != null) {
+            timelinePollJob?.cancel()
+            _state.update { it.copy(timeline = null) }
+        }
+    }
+
     private fun startTimelinePoller(id: String) {
         timelinePollJob?.cancel()
         timelinePollJob = viewModelScope.launch {
             delay(800)
-            while (isActive && (_state.value.route as? Route.Timeline)?.conversationId == id) {
+            while (isActive && currentObservedConversationId() == id) {
                 val session = sessions[id]
                 val fast = session?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil
                 runCatching { syncConversationTimeline(id, forceRows = fast) }
@@ -750,7 +911,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     delay(900)
                 } else {
                     for (step in 0 until 8) {
-                        if (!isActive || (_state.value.route as? Route.Timeline)?.conversationId != id) break
+                        if (!isActive || currentObservedConversationId() != id) break
                         if (sessions[id]?.inFlightTurnId != null || System.currentTimeMillis() < boostPollingUntil) break
                         delay(450)
                     }
@@ -798,13 +959,13 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 knownConversationIds.add(created.id)
                 val agent = _state.value.catalog?.agents?.find { it.id == resolvedAgentId }
                 withContext(Dispatchers.IO) {
-                    if (!modeId.isNullOrBlank() && modeId != agent?.currentModeId) {
-                        runCatching { api.setSessionMode(origin, token, created.id, modeId) }.onFailure { fail(it) }
+                    runCatching { api.ensureSessionControls(origin, token, created.id) }
+                    if (!modeId.isNullOrBlank()) {
+                        runCatching { api.setSessionMode(origin, token, created.id, modeId) }
                     }
                     config.forEach { (key, value) ->
-                        val default = agent?.sessionConfig?.find { option -> option.key == key }?.value
-                        if (key.isNotBlank() && value.isNotBlank() && value != default) {
-                            runCatching { api.setSessionConfigOption(origin, token, created.id, key, value) }.onFailure { fail(it) }
+                        if (key.isNotBlank() && value.isNotBlank()) {
+                            runCatching { api.setSessionConfigOption(origin, token, created.id, key, value) }
                         }
                     }
                 }
@@ -1702,23 +1863,50 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                 if (event.kind == "turn_completed" || event.kind == "turn_failed") {
                     val key = "terminal:$conversationId:${event.sequence}"
                     if (notifiedEventKeys.add(key)) {
+                        val project = resolveProjectName(session.workspaceId)
                         val titleText = session.title.ifBlank { "对话任务" }
                         if (event.kind == "turn_failed") {
                             SystemNotifier.notifyAlert(
                                 getApplication(),
                                 key,
-                                "会话执行出错",
+                                "$project · 会话执行出错",
                                 titleText,
                                 conversationId,
                             )
+                            presentAttentionToast(
+                                CompanionAttentionToast(
+                                    id = key,
+                                    conversationId = conversationId,
+                                    workspaceId = session.workspaceId,
+                                    agentId = session.agentId,
+                                    projectName = project,
+                                    title = "$project：会话执行异常",
+                                    subtitle = titleText,
+                                    kind = AttentionToastKind.Failed(titleText),
+                                ),
+                            )
+                            finishLiveActivity(conversationId, failedMessage = titleText)
                         } else {
                             SystemNotifier.notifyAlert(
                                 getApplication(),
                                 key,
-                                "会话已完成",
+                                "$project · 会话已完成",
                                 titleText,
                                 conversationId,
                             )
+                            presentAttentionToast(
+                                CompanionAttentionToast(
+                                    id = key,
+                                    conversationId = conversationId,
+                                    workspaceId = session.workspaceId,
+                                    agentId = session.agentId,
+                                    projectName = project,
+                                    title = "$project：会话已完成",
+                                    subtitle = titleText,
+                                    kind = AttentionToastKind.Completed,
+                                ),
+                            )
+                            finishLiveActivity(conversationId, failedMessage = null)
                         }
                     }
                 }
@@ -1902,16 +2090,27 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                     if (knownConversationIds.add(conv.id) && !locallyCreatedConversationIds.contains(conv.id)) {
                         val alertKey = "new_conv:${conv.id}"
                         if (notifiedEventKeys.add(alertKey)) {
+                            val project = resolveProjectName(conv.workspaceId)
                             val titleText = conv.title.ifBlank { "新对话已创建，点击查看" }
                             SystemNotifier.notifyAlert(
                                 getApplication(),
                                 alertKey,
-                                "新会话已创建",
+                                "$project · 新会话已创建",
                                 titleText,
                                 conv.id,
                             )
-                            _state.update { it.copy(notice = "新会话已创建：$titleText") }
-                            scheduleAutoDismissNotice(3_500L)
+                            presentAttentionToast(
+                                CompanionAttentionToast(
+                                    id = alertKey,
+                                    conversationId = conv.id,
+                                    workspaceId = conv.workspaceId,
+                                    agentId = conv.agentId,
+                                    projectName = project,
+                                    title = "$project：新会话已创建",
+                                    subtitle = titleText,
+                                    kind = AttentionToastKind.Created,
+                                ),
+                            )
                             if (_state.value.route == Route.Conversations) {
                                 userRequestedNewChatLanding = false
                                 openConversation(conv.id)
@@ -1943,8 +2142,10 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                 it.workspaceId = summary.workspaceId
                             }
                         }
+                        val isFirstSnapshot = !initializedConversations.contains(summary.id)
+                        val previouslyRunning = wasRunningByConversation[summary.id] ?: false
                         val afterSeq = synchronized(session) { session.lastSequence }
-                        if (afterSeq == 0L || summary.status.equals("inprogress", ignoreCase = true)) {
+                        if (afterSeq == 0L || summary.status.equals("inprogress", ignoreCase = true) || previouslyRunning) {
                             val events = api.offlineEvents(origin, token, summary.id, afterSeq)
                             if (events.isNotEmpty()) {
                                 synchronized(session) {
@@ -1953,6 +2154,7 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
                                 anyChanged = true
                             }
                         }
+                        syncSessionAttentionAndLiveActivity(session, isFirstSnapshot = isFirstSnapshot)
                     }
                 }
                 if (anyChanged) {
@@ -1966,33 +2168,534 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun publishTimeline(session: TimelineSession) {
-        if ((_state.value.route as? Route.Timeline)?.conversationId == session.conversationId) {
+        if (currentObservedConversationId() == session.conversationId) {
             val snap = synchronized(session) { session.snapshot() }
             _state.update { if (it.timeline == snap) it else it.copy(timeline = snap) }
         }
+        val isFirstSnapshot = !initializedConversations.contains(session.conversationId)
+        syncSessionAttentionAndLiveActivity(session, isFirstSnapshot = isFirstSnapshot)
         rebuildInbox()
+    }
+
+    private fun resolveProjectName(workspaceId: String): String {
+        val cat = _state.value.catalog ?: return "VibeX"
+        val ws = cat.workspaces.find { it.id == workspaceId } ?: return "VibeX"
+        return cat.projects.find { it.id == ws.projectId }?.name?.ifBlank { "VibeX" } ?: "VibeX"
+    }
+
+    fun dismissAttentionToast() {
+        _state.update { it.copy(activeAttentionToast = null, attentionActionError = null) }
+        syncSystemIslandOverlay()
+    }
+
+    fun dismissLiveActivityOverlay() {
+        liveActivityLingerJob?.cancel()
+        liveActivityLingerJob = null
+        activeLiveConversationId = null
+        SystemNotifier.cancelLiveTaskProgress(getApplication())
+        _state.update { it.copy(liveActivity = null) }
+        syncSystemIslandOverlay()
+    }
+
+    private fun presentAttentionToast(toast: CompanionAttentionToast) {
+        _state.update {
+            it.copy(
+                activeAttentionToast = toast,
+                attentionActionError = null,
+            )
+        }
+        syncSystemIslandOverlay()
+    }
+
+    fun respondToastPermission(conversationId: String, permissionId: String, optionId: String) {
+        _state.update { it.copy(attentionActionBusy = true, attentionActionError = null) }
+        syncSystemIslandOverlay()
+        respondPermission(conversationId, permissionId, optionId) {
+            _state.update {
+                it.copy(
+                    attentionActionBusy = false,
+                    activeAttentionToast = null,
+                    attentionActionError = null,
+                )
+            }
+            syncSystemIslandOverlay()
+        }
+    }
+
+    fun respondToastQuestion(
+        conversationId: String,
+        question: PendingQuestion,
+        choice: QuestionChoice?,
+        fallbackText: String?,
+    ) {
+        _state.update { it.copy(attentionActionBusy = true, attentionActionError = null) }
+        syncSystemIslandOverlay()
+        val forms = QuestionForm.questions(question)
+        val payload = when {
+            choice != null -> {
+                val first = forms.firstOrNull()
+                val answers = if (first != null) {
+                    mapOf(first.id to QuestionAnswer(selected = listOf(choice.value), customText = ""))
+                } else emptyMap()
+                QuestionForm.content(question, forms, answers)
+            }
+            !fallbackText.isNullOrBlank() -> {
+                val first = forms.firstOrNull()
+                val answers = if (first != null) {
+                    mapOf(first.id to QuestionAnswer(selected = emptyList(), customText = fallbackText))
+                } else emptyMap()
+                QuestionForm.content(question, forms, answers)
+            }
+            else -> null
+        }
+        respondQuestionContent(conversationId, question.id, payload) {
+            _state.update {
+                it.copy(
+                    attentionActionBusy = false,
+                    activeAttentionToast = null,
+                    attentionActionError = null,
+                )
+            }
+            syncSystemIslandOverlay()
+        }
+    }
+
+    fun sendToastQuickReply(toast: CompanionAttentionToast, text: String) {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return
+        if (toast.kind is AttentionToastKind.Question) {
+            respondToastQuestion(toast.conversationId, toast.kind.question, null, trimmed)
+            return
+        }
+        if (toast.kind is AttentionToastKind.Permission) {
+            val allowOpt = toast.kind.prompt.resolveAllowOption(PermissionAllowScope.Once)
+                ?: toast.kind.prompt.options.firstOrNull()
+            if (allowOpt != null) {
+                respondPermission(toast.conversationId, toast.kind.prompt.id, allowOpt.id)
+            }
+        }
+        dismissAttentionToast()
+        send(toast.conversationId, trimmed)
+    }
+
+    fun handleSystemNotificationAction(
+        actionKind: String,
+        conversationId: String,
+        targetId: String,
+        optionId: String,
+    ) {
+        if (conversationId.isBlank()) return
+        when (actionKind) {
+            "perm_allow", "perm_reject" -> {
+                if (targetId.isNotBlank()) {
+                    respondPermission(conversationId, targetId, optionId.ifBlank { null })
+                    dismissAttentionToast()
+                }
+            }
+            "question_confirm" -> {
+                val q = sessions[conversationId]?.pendingQuestion
+                if (q != null) {
+                    val firstChoice = QuestionForm.questions(q).firstOrNull()?.options?.firstOrNull()
+                    respondToastQuestion(
+                        conversationId,
+                        q,
+                        firstChoice,
+                        if (firstChoice == null) "Yes" else null,
+                    )
+                } else if (targetId.isNotBlank()) {
+                    approve(
+                        PendingItem(
+                            conversationId = conversationId,
+                            conversationTitle = "",
+                            kind = dev.vibex.companion.PendingKind.Question,
+                            id = targetId,
+                            title = "",
+                            body = "",
+                            options = emptyList(),
+                            rowId = "",
+                        ),
+                        optionId.ifBlank { "Yes" },
+                    )
+                }
+            }
+            "question_reject" -> {
+                if (targetId.isNotBlank()) {
+                    respondQuestionContent(conversationId, targetId, null)
+                    dismissAttentionToast()
+                }
+            }
+            else -> openConversation(conversationId)
+        }
+    }
+
+    private fun syncSessionAttentionAndLiveActivity(
+        session: TimelineSession,
+        isFirstSnapshot: Boolean = false,
+    ) {
+        val convId = session.conversationId.ifBlank { return }
+        val snap = synchronized(session) {
+            val isTurnRunning = session.inFlightTurnId != null
+            val perm = session.permissionPrompt
+            val quest = session.pendingQuestion
+            val tasks = session.planTasks.toList()
+            val rows = session.rows.toList()
+            val title = session.title.ifBlank {
+                _state.value.conversations.find { it.id == convId }?.title.orEmpty()
+            }.ifBlank { "未命名对话" }
+            val wsId = session.workspaceId.ifBlank {
+                _state.value.conversations.find { it.id == convId }?.workspaceId.orEmpty()
+            }
+            val agId = session.agentId.ifBlank {
+                _state.value.conversations.find { it.id == convId }?.agentId.orEmpty()
+            }
+            Triple(isTurnRunning, perm to quest, Triple(tasks, rows, Triple(title, wsId, agId)))
+        }
+
+        val isTurnRunning = snap.first
+        val (perm, quest) = snap.second
+        val (tasks, rows, meta) = snap.third
+        val (sessionTitle, wsId, agId) = meta
+        val project = resolveProjectName(wsId)
+
+        val previouslyRunning = wasRunningByConversation.put(convId, isTurnRunning) ?: false
+        initializedConversations.add(convId)
+
+        // 1. Permission Prompt Attention Toast & System Notification with Action Buttons
+        if (perm != null) {
+            val eventKey = "perm:$convId:${perm.id}"
+            if (notifiedEventKeys.add(eventKey)) {
+                val subtitle = perm.command ?: perm.displaySubtitle ?: perm.displayHeading
+                val allowOnce = perm.resolveAllowOption(PermissionAllowScope.Once)
+                val allowSession = perm.resolveAllowOption(PermissionAllowScope.Session)
+                val reject = perm.rejectOption
+                val sysActions = buildList {
+                    if (allowOnce != null) {
+                        add(SystemNotificationAction("允许本次", "perm_allow", convId, perm.id, allowOnce.id))
+                    }
+                    if (allowSession != null && allowSession.id != allowOnce?.id) {
+                        add(SystemNotificationAction("本会话允许", "perm_allow", convId, perm.id, allowSession.id))
+                    }
+                    if (reject != null) {
+                        add(SystemNotificationAction("拒绝", "perm_reject", convId, perm.id, reject.id))
+                    }
+                }
+                SystemNotifier.notifyAlert(
+                    getApplication(),
+                    eventKey,
+                    "$project：需要批准操作权限",
+                    "$sessionTitle · $subtitle",
+                    convId,
+                    actions = sysActions,
+                )
+                presentAttentionToast(
+                    CompanionAttentionToast(
+                        id = eventKey,
+                        conversationId = convId,
+                        workspaceId = wsId,
+                        agentId = agId,
+                        projectName = project,
+                        title = "$project：需要批准操作权限",
+                        subtitle = "$sessionTitle · $subtitle",
+                        kind = AttentionToastKind.Permission(perm),
+                    ),
+                )
+            }
+        }
+
+        // 2. Question Prompt Attention Toast & System Notification with Action Buttons
+        if (quest != null) {
+            val eventKey = "question:$convId:${quest.id}"
+            if (notifiedEventKeys.add(eventKey)) {
+                val qText = quest.prompt.ifBlank { "Agent 需要你确认下一步方案" }
+                val sysActions = listOf(
+                    SystemNotificationAction("批准执行", "question_confirm", convId, quest.id, "Yes"),
+                    SystemNotificationAction("拒绝", "question_reject", convId, quest.id, ""),
+                )
+                SystemNotifier.notifyAlert(
+                    getApplication(),
+                    eventKey,
+                    "$project：等待你的回答",
+                    "$sessionTitle · $qText",
+                    convId,
+                    actions = sysActions,
+                )
+                presentAttentionToast(
+                    CompanionAttentionToast(
+                        id = eventKey,
+                        conversationId = convId,
+                        workspaceId = wsId,
+                        agentId = agId,
+                        projectName = project,
+                        title = "$project：等待你的回答",
+                        subtitle = "$sessionTitle · $qText",
+                        kind = AttentionToastKind.Question(quest),
+                    ),
+                )
+            }
+        }
+
+        // 3. Turn Transition: Running -> Completed / Failed (for background & foreground sessions)
+        if (!isFirstSnapshot && previouslyRunning && !isTurnRunning && perm == null && quest == null) {
+            val lastRow = rows.lastOrNull()
+            val eventKey = "done:$convId:${session.lastSequence}:${rows.size}"
+            if (notifiedEventKeys.add(eventKey)) {
+                if (lastRow?.kind == "turn_failed") {
+                    val errText = lastRow.body.ifBlank { sessionTitle }
+                    SystemNotifier.notifyAlert(
+                        getApplication(),
+                        eventKey,
+                        "$project · 会话执行异常",
+                        errText,
+                        convId,
+                    )
+                    presentAttentionToast(
+                        CompanionAttentionToast(
+                            id = eventKey,
+                            conversationId = convId,
+                            workspaceId = wsId,
+                            agentId = agId,
+                            projectName = project,
+                            title = "$project：会话执行异常",
+                            subtitle = errText,
+                            kind = AttentionToastKind.Failed(errText),
+                        ),
+                    )
+                    finishLiveActivity(convId, failedMessage = errText)
+                } else {
+                    SystemNotifier.notifyAlert(
+                        getApplication(),
+                        eventKey,
+                        "$project · 会话已完成",
+                        sessionTitle,
+                        convId,
+                    )
+                    presentAttentionToast(
+                        CompanionAttentionToast(
+                            id = eventKey,
+                            conversationId = convId,
+                            workspaceId = wsId,
+                            agentId = agId,
+                            projectName = project,
+                            title = "$project：会话已完成",
+                            subtitle = sessionTitle,
+                            kind = AttentionToastKind.Completed,
+                        ),
+                    )
+                    finishLiveActivity(convId, failedMessage = null)
+                }
+            }
+        }
+
+        // 4. Sync Dynamic Island & Live Progress Notification
+        val completedTasks = tasks.count { it.status == PlanTask.Status.Completed }
+        val planActive = tasks.isNotEmpty() && completedTasks < tasks.size
+        val hasPendingApproval = perm != null || quest != null
+        val effectivelyActive = isTurnRunning || planActive || hasPendingApproval
+
+        if (effectivelyActive) {
+            liveActivityLingerJob?.cancel()
+            liveActivityLingerJob = null
+            activeLiveConversationId = convId
+            val startedAtMs = liveRunStartMsByConversation.getOrPut(convId) { System.currentTimeMillis() }
+
+            val latestToolRow = rows.lastOrNull { it.kind == "tool" }
+            val stepCount = rows.count { it.kind == "tool" }
+            val hasThinking = rows.any { it.kind == "reasoning" && it.body.isNotBlank() }
+            val hasTextOutput = rows.lastOrNull()?.kind == "assistant"
+            val approvalSummary = perm?.let { it.command ?: it.displaySubtitle ?: it.displayHeading }
+                ?: quest?.prompt?.takeIf { it.isNotBlank() }
+
+            val resolved = resolveHumanStage(
+                tasks = tasks,
+                completed = completedTasks,
+                planActive = planActive,
+                latestToolName = latestToolRow?.toolName?.ifBlank { latestToolRow.title },
+                stepCount = stepCount,
+                hasThinking = hasThinking,
+                hasTextOutput = hasTextOutput,
+                hasPendingApproval = hasPendingApproval,
+                approvalSummary = approvalSummary,
+            )
+
+            val prevPeak = livePeakProgressByConversation[convId] ?: 0.12f
+            val nextPeak = maxOf(prevPeak, resolved.progress)
+            livePeakProgressByConversation[convId] = nextPeak
+            val smoothProgress = if (planActive) resolved.progress else nextPeak
+
+            val liveState = TaskLiveActivityState(
+                conversationId = convId,
+                projectName = project,
+                conversationTitle = sessionTitle,
+                phase = resolved.phase,
+                stageTitle = resolved.stageTitle,
+                stageSubtitle = resolved.stageSubtitle,
+                progress = smoothProgress.coerceIn(0.10f, 0.96f),
+                completed = if (planActive) completedTasks else 0,
+                total = if (planActive) tasks.size else 0,
+                stepCount = maxOf(stepCount, completedTasks),
+                isRunning = isTurnRunning || hasPendingApproval,
+                startedAtMs = startedAtMs,
+            )
+
+            _state.update { if (it.liveActivity == liveState) it else it.copy(liveActivity = liveState) }
+            SystemNotifier.notifyLiveTaskProgress(getApplication(), liveState)
+            syncSystemIslandOverlay()
+        } else if (activeLiveConversationId == convId && liveActivityLingerJob == null) {
+            finishLiveActivity(convId, failedMessage = null)
+        }
+    }
+
+    private fun finishLiveActivity(conversationId: String, failedMessage: String?) {
+        val current = _state.value.liveActivity
+        if (current == null || current.conversationId != conversationId) return
+        if (!current.isRunning && liveActivityLingerJob != null) return
+
+        liveRunStartMsByConversation.remove(conversationId)
+        livePeakProgressByConversation.remove(conversationId)
+
+        val doneState = if (failedMessage != null) {
+            current.copy(
+                phase = VibeXActivityPhase.Failed,
+                stageTitle = "执行中断",
+                stageSubtitle = failedMessage,
+                isRunning = false,
+            )
+        } else {
+            current.copy(
+                phase = VibeXActivityPhase.Completed,
+                stageTitle = "任务已完成",
+                stageSubtitle = "全部开发步骤已执行完毕，点击查看结果",
+                progress = 1.0f,
+                completed = if (current.total > 0) current.total else current.completed,
+                isRunning = false,
+            )
+        }
+
+        _state.update { it.copy(liveActivity = doneState) }
+        SystemNotifier.notifyLiveTaskProgress(getApplication(), doneState)
+        syncSystemIslandOverlay()
+
+        liveActivityLingerJob?.cancel()
+        liveActivityLingerJob = viewModelScope.launch {
+            delay(20_000L)
+            if (activeLiveConversationId == conversationId) {
+                activeLiveConversationId = null
+                _state.update { it.copy(liveActivity = null) }
+                SystemNotifier.cancelLiveTaskProgress(getApplication())
+                syncSystemIslandOverlay()
+            }
+        }
+    }
+
+    private data class ResolvedStage(
+        val phase: VibeXActivityPhase,
+        val stageTitle: String,
+        val stageSubtitle: String,
+        val progress: Float,
+    )
+
+    private fun resolveHumanStage(
+        tasks: List<PlanTask>,
+        completed: Int,
+        planActive: Boolean,
+        latestToolName: String?,
+        stepCount: Int,
+        hasThinking: Boolean,
+        hasTextOutput: Boolean,
+        hasPendingApproval: Boolean,
+        approvalSummary: String?,
+    ): ResolvedStage {
+        val baseProgress: Float = if (planActive && tasks.isNotEmpty()) {
+            val raw = completed.toFloat() / tasks.size.toFloat()
+            raw.coerceIn(0.15f, 0.94f)
+        } else {
+            val stepFactor = (1.0 - kotlin.math.exp(-maxOf(1, stepCount).toDouble() * 0.22)).toFloat()
+            (0.16f + stepFactor * 0.74f).coerceAtMost(0.92f)
+        }
+
+        if (hasPendingApproval) {
+            return ResolvedStage(
+                phase = VibeXActivityPhase.WaitingInput,
+                stageTitle = "等待你确认",
+                stageSubtitle = approvalSummary ?: "需要批准操作权限或确认执行方案",
+                progress = maxOf(baseProgress, 0.55f),
+            )
+        }
+
+        val tool = latestToolName?.lowercase().orEmpty()
+        if (tool.isNotEmpty()) {
+            if (
+                tool.contains("edit") || tool.contains("write") || tool.contains("patch") ||
+                tool.contains("create") || tool.contains("replace")
+            ) {
+                return ResolvedStage(
+                    phase = VibeXActivityPhase.Developing,
+                    stageTitle = "代码开发中",
+                    stageSubtitle = "正在编写与修改项目模块",
+                    progress = maxOf(baseProgress, 0.58f),
+                )
+            }
+            if (
+                tool.contains("bash") || tool.contains("exec") || tool.contains("run") ||
+                tool.contains("shell") || tool.contains("terminal") || tool.contains("test") ||
+                tool.contains("check") || tool.contains("build")
+            ) {
+                return ResolvedStage(
+                    phase = VibeXActivityPhase.Verifying,
+                    stageTitle = "调试验证中",
+                    stageSubtitle = "正在执行构建或测试验证",
+                    progress = maxOf(baseProgress, 0.74f),
+                )
+            }
+            if (
+                tool.contains("read") || tool.contains("search") || tool.contains("grep") ||
+                tool.contains("find") || tool.contains("list") || tool.contains("view") ||
+                tool.contains("tree") || tool.contains("glob")
+            ) {
+                return ResolvedStage(
+                    phase = VibeXActivityPhase.Exploring,
+                    stageTitle = "查阅项目中",
+                    stageSubtitle = "正在检索项目结构与依赖关系",
+                    progress = maxOf(baseProgress, 0.36f),
+                )
+            }
+            return ResolvedStage(
+                phase = VibeXActivityPhase.Developing,
+                stageTitle = "代码开发中",
+                stageSubtitle = "正在调用研发工具推进任务",
+                progress = maxOf(baseProgress, 0.50f),
+            )
+        }
+
+        if (hasTextOutput) {
+            return ResolvedStage(
+                phase = VibeXActivityPhase.Summarizing,
+                stageTitle = "整理回复中",
+                stageSubtitle = "正在生成总结与解决方案",
+                progress = maxOf(baseProgress, 0.88f),
+            )
+        }
+
+        if (hasThinking) {
+            return ResolvedStage(
+                phase = VibeXActivityPhase.Thinking,
+                stageTitle = "思考规划中",
+                stageSubtitle = "正在分析需求与梳理实现路径",
+                progress = maxOf(baseProgress, 0.24f),
+            )
+        }
+
+        return ResolvedStage(
+            phase = VibeXActivityPhase.Thinking,
+            stageTitle = "准备执行中",
+            stageSubtitle = "VibeX 正在同步工作区状态",
+            progress = 0.16f,
+        )
     }
 
     private fun rebuildInbox() {
         val items = sessions.values.flatMap { session ->
             synchronized(session) { EventFold.pendingItems(session) }
-        }
-        items.forEach { pending ->
-            val key = "inbox:${pending.conversationId}:${pending.id}"
-            if (notifiedEventKeys.add(key)) {
-                val heading = if (pending.kind == dev.vibex.companion.PendingKind.Permission) {
-                    "需要权限批准"
-                } else {
-                    "等待你回复问题"
-                }
-                SystemNotifier.notifyAlert(
-                    getApplication(),
-                    key,
-                    heading,
-                    pending.title.ifBlank { pending.conversationTitle.ifBlank { "点击打开会话处理" } },
-                    pending.conversationId,
-                )
-            }
         }
         _state.update { if (it.inbox == items) it else it.copy(inbox = items) }
     }
@@ -2002,6 +2705,295 @@ class CompanionModel(application: Application) : AndroidViewModel(application) {
         val selectedId = if (selected) profile.hostId else _state.value.selectedHostId
         persist { it.copy(selectedHostId = selectedId, profiles = rest) }
         _state.update { it.copy(profiles = rest, selectedHostId = selectedId) }
+        if (_state.value.accountSignedIn) {
+            pushLocalHostsToAccount()
+        }
+    }
+
+    fun openAccountSitePath(path: String) {
+        val clean = if (path.startsWith("/")) path else "/$path"
+        val url = "${VibeXAccountRepository.SITE_BASE_URL}$clean"
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            getApplication<Application>().startActivity(intent)
+        }
+    }
+
+    fun startAccountLogin() {
+        if (_state.value.accountStartingLogin) return
+        viewModelScope.launch {
+            _state.update { it.copy(accountStartingLogin = true, accountError = null) }
+            runCatching { accountRepo.startLogin() }
+                .onSuccess { login ->
+                    _state.update {
+                        it.copy(
+                            accountStartingLogin = false,
+                            accountLoginState = login,
+                            accountError = null,
+                        )
+                    }
+                    runCatching {
+                        val intent = Intent(Intent.ACTION_VIEW, Uri.parse(login.verifyUrl)).apply {
+                            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        }
+                        getApplication<Application>().startActivity(intent)
+                    }
+                    startPollingAccountLogin(login)
+                }
+                .onFailure { err ->
+                    _state.update {
+                        it.copy(
+                            accountStartingLogin = false,
+                            accountError = describeAccountError(err),
+                        )
+                    }
+                }
+        }
+    }
+
+    fun reopenAccountVerifyUrl() {
+        val url = _state.value.accountLoginState?.verifyUrl ?: return
+        runCatching {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse(url)).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            }
+            getApplication<Application>().startActivity(intent)
+        }
+    }
+
+    fun cancelAccountLogin() {
+        accountLoginPollJob?.cancel()
+        accountLoginPollJob = null
+        _state.update { it.copy(accountLoginState = null) }
+    }
+
+    private fun startPollingAccountLogin(login: VibeXDeviceLogin) {
+        accountLoginPollJob?.cancel()
+        val expiresAtMs = System.currentTimeMillis() + (login.expiresIn.coerceAtLeast(30) * 1000L)
+        val intervalMs = login.interval.coerceAtLeast(2) * 1000L
+        accountLoginPollJob = viewModelScope.launch {
+            while (isActive) {
+                delay(intervalMs)
+                if (System.currentTimeMillis() >= expiresAtMs) {
+                    _state.update {
+                        it.copy(
+                            accountLoginState = null,
+                            accountError = "登录验证码已过期，请重新发起登录",
+                        )
+                    }
+                    return@launch
+                }
+                val result = runCatching { accountRepo.pollLogin(login) }
+                result.onSuccess { approved ->
+                    if (approved) {
+                        _state.update {
+                            it.copy(
+                                accountSignedIn = true,
+                                accountLoginState = null,
+                                accountError = null,
+                            )
+                        }
+                        refreshAccount()
+                        return@launch
+                    }
+                }.onFailure { err ->
+                    if (err is VibeXAccountException && err.code == "network") {
+                        return@onFailure
+                    }
+                    _state.update {
+                        it.copy(
+                            accountLoginState = null,
+                            accountError = describeAccountError(err),
+                        )
+                    }
+                    return@launch
+                }
+            }
+        }
+    }
+
+    fun signOutAccount() {
+        if (_state.value.accountSigningOut) return
+        accountLoginPollJob?.cancel()
+        accountLoginPollJob = null
+        viewModelScope.launch {
+            _state.update { it.copy(accountSigningOut = true) }
+            accountRepo.signOut()
+            _state.update {
+                it.copy(
+                    accountSignedIn = false,
+                    accountOverview = null,
+                    accountHostConfigs = emptyList(),
+                    accountSavedHosts = emptyList(),
+                    accountSigningOut = false,
+                    accountLoginState = null,
+                    accountError = null,
+                )
+            }
+        }
+    }
+
+    fun refreshAccount() {
+        if (accountRepo.getToken() == null) {
+            _state.update { it.copy(accountSignedIn = false, accountOverview = null) }
+            return
+        }
+        viewModelScope.launch {
+            _state.update {
+                it.copy(
+                    accountSignedIn = true,
+                    accountLoading = it.accountOverview == null,
+                    accountError = null,
+                )
+            }
+            runCatching { accountRepo.fetchOverview() }
+                .onSuccess { overview ->
+                    _state.update {
+                        it.copy(
+                            accountSignedIn = true,
+                            accountOverview = overview,
+                            accountLoading = false,
+                            accountError = null,
+                        )
+                    }
+                    syncAccountHosts(forcePush = true)
+                }
+                .onFailure { err ->
+                    if (err is VibeXAccountException && err.code == "signed_out") {
+                        _state.update {
+                            it.copy(
+                                accountSignedIn = false,
+                                accountOverview = null,
+                                accountHostConfigs = emptyList(),
+                                accountSavedHosts = emptyList(),
+                                accountLoading = false,
+                            )
+                        }
+                    } else {
+                        _state.update {
+                            it.copy(
+                                accountLoading = false,
+                                accountError = describeAccountError(err),
+                            )
+                        }
+                    }
+                }
+        }
+    }
+
+    fun syncAccountHosts(forcePush: Boolean = false) {
+        if (accountRepo.getToken() == null) return
+        viewModelScope.launch {
+            _state.update { it.copy(accountSyncingHosts = true) }
+            val configs = runCatching { accountRepo.fetchHostConfigs() }.getOrDefault(emptyList())
+            val remoteSaved = runCatching { accountRepo.fetchSavedHosts() }.getOrDefault(emptyList())
+            mergeRemoteAccountProfiles(remoteSaved)
+            val localExport = exportSyncableProfiles()
+            val finalSaved = if (localExport.isNotEmpty() && (forcePush || localExport.size != remoteSaved.size)) {
+                runCatching { accountRepo.putSavedHosts(localExport) }.getOrDefault(remoteSaved)
+            } else {
+                remoteSaved
+            }
+            _state.update {
+                it.copy(
+                    accountHostConfigs = configs,
+                    accountSavedHosts = finalSaved,
+                    accountSyncingHosts = false,
+                )
+            }
+        }
+    }
+
+    private fun pushLocalHostsToAccount() {
+        if (accountRepo.getToken() == null) return
+        viewModelScope.launch {
+            val localExport = exportSyncableProfiles()
+            if (localExport.isEmpty()) return@launch
+            runCatching { accountRepo.putSavedHosts(localExport) }.onSuccess { saved ->
+                _state.update { it.copy(accountSavedHosts = saved) }
+            }
+        }
+    }
+
+    private fun mergeRemoteAccountProfiles(remoteSaved: List<VibeXSyncableHostProfile>) {
+        val relayBase = PairingClient.DEFAULT_OFFICIAL_RELAY_BASE.trimEnd('/')
+        val currentList = _state.value.profiles.toMutableList()
+        var didChange = false
+
+        for (remote in remoteSaved) {
+            if (remote.accessToken.isBlank()) continue
+            val cleanHostId = remote.hostId.ifBlank { remote.profileId }
+            if (cleanHostId.isBlank()) continue
+            var targetOrigin = remote.origin.trim().trimEnd('/')
+            if (
+                (targetOrigin.isBlank() || targetOrigin.contains("127.0.0.1") || targetOrigin.contains("localhost")) &&
+                remote.hostId.isNotBlank() &&
+                relayBase.isNotEmpty()
+            ) {
+                targetOrigin = "$relayBase/t/${remote.hostId}"
+            }
+            if (targetOrigin.isBlank()) continue
+            val exists = currentList.any {
+                it.hostId == cleanHostId ||
+                    it.lastSuccessOrigin == targetOrigin ||
+                    it.reachability.any { r -> r.origin == targetOrigin }
+            }
+            if (!exists) {
+                credentials.put(cleanHostId, remote.accessToken)
+                currentList += HostProfile(
+                    hostId = cleanHostId,
+                    name = remote.name.ifBlank { "VibeX 电脑" },
+                    deviceId = remote.deviceId.ifBlank { remote.profileId },
+                    reachability = listOf(StoredReachability(targetOrigin, "published")),
+                    lastSuccessOrigin = targetOrigin,
+                    lastSyncAt = System.currentTimeMillis(),
+                )
+                didChange = true
+            }
+        }
+
+        if (didChange) {
+            val selectedId = _state.value.selectedHostId ?: currentList.firstOrNull()?.hostId
+            persist { it.copy(selectedHostId = selectedId, profiles = currentList) }
+            _state.update { it.copy(profiles = currentList, selectedHostId = selectedId) }
+        }
+    }
+
+    private fun exportSyncableProfiles(): List<VibeXSyncableHostProfile> {
+        val nowIso = Instant.now().toString()
+        return _state.value.profiles.mapNotNull { profile ->
+            val token = credentials.get(profile.hostId)?.takeIf { it.isNotBlank() } ?: return@mapNotNull null
+            val origin = profile.lastSuccessOrigin
+                ?: profile.reachability.firstOrNull()?.origin
+                ?: return@mapNotNull null
+            VibeXSyncableHostProfile(
+                syncKey = profile.hostId,
+                profileId = profile.deviceId.ifBlank { profile.hostId },
+                hostId = profile.hostId,
+                name = profile.name,
+                origin = origin,
+                provisionKind = "http",
+                deviceId = profile.deviceId.ifBlank { profile.hostId },
+                accessToken = token,
+                lastConnectedAt = nowIso,
+                updatedAt = nowIso,
+            )
+        }
+    }
+
+    private fun describeAccountError(err: Throwable): String {
+        if (err is VibeXAccountException) {
+            return when (err.code) {
+                "network" -> "无法连接到 VibeX 账号服务，请检查网络后重试"
+                "signed_out" -> "登录状态已失效，请重新登录"
+                "expired", "invalid" -> "登录验证码已过期，请重试"
+                "denied" -> "已拒绝本次登录授权"
+                else -> "账号服务请求失败（${err.code}）"
+            }
+        }
+        return err.message ?: "账号请求失败"
     }
 
     private fun persist(transform: (StoredState) -> StoredState) {
