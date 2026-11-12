@@ -2,6 +2,9 @@ package dev.vibex.companion.app.data
 
 import android.content.Context
 import android.os.Build
+import dev.vibex.companion.AccountDesktop
+import dev.vibex.companion.AccountDesktops
+import dev.vibex.companion.AssignedRelayServer
 import dev.vibex.companion.asArray
 import dev.vibex.companion.asBool
 import dev.vibex.companion.asNumber
@@ -20,9 +23,11 @@ import java.util.Locale
 import java.util.concurrent.TimeUnit
 
 data class VibeXAccountUser(
+    val id: String = "",
     val email: String = "",
     val username: String = "",
     val displayName: String = "",
+    val avatarUrl: String = "",
     val tier: String = "regular",
     val createdAt: String = "",
 ) {
@@ -77,6 +82,8 @@ data class VibeXAccountOverview(
     val serverNow: String = "",
     val grants: List<VibeXCreditGrant> = emptyList(),
     val usage30d: VibeXUsage30d = VibeXUsage30d(),
+    val relayPermission: Boolean? = null,
+    val assignedRelayServer: AssignedRelayServer? = null,
 ) {
     val activeGrants: List<VibeXCreditGrant>
         get() {
@@ -135,33 +142,6 @@ data class VibeXSyncableHostProfile(
     val updatedAt: String = "",
 )
 
-data class VibeXAccountHostConfigItem(
-    val hostId: String,
-    val hostName: String,
-    val kind: String = "local",
-    val osType: String = "",
-    val osArch: String = "",
-    val enabledAgentsCount: Int = 0,
-) {
-    val platformBadge: String?
-        get() {
-            val rawOs = osType.trim()
-            val rawArch = osArch.trim()
-            if (rawOs.isEmpty() && rawArch.isEmpty()) return null
-            val osLabel = when (rawOs.lowercase(Locale.ROOT)) {
-                "macos", "darwin" -> "macOS"
-                "windows" -> "Windows"
-                "linux" -> "Linux"
-                else -> rawOs
-            }
-            return if (osLabel.isNotEmpty() && rawArch.isNotEmpty()) {
-                "$osLabel · $rawArch"
-            } else {
-                osLabel.ifEmpty { rawArch }
-            }
-        }
-}
-
 class VibeXAccountException(val code: String) : Exception(code)
 
 class VibeXAccountRepository(context: Context) {
@@ -207,6 +187,7 @@ class VibeXAccountRepository(context: Context) {
             mapOf(
                 "deviceName" to deviceName,
                 "hostId" to "",
+                "nextPath" to "/account",
             ),
         )
         val obj = requestObject("/api/auth/desktop/start", "POST", payload, token = null)
@@ -255,9 +236,11 @@ class VibeXAccountRepository(context: Context) {
         val obj = requestObject("/api/modelrouter/desktop", "GET", null, token = token)
         val userObj = obj.value["user"]?.asObject()
         val user = VibeXAccountUser(
+            id = userObj?.value?.get("id")?.asText().orEmpty(),
             email = userObj?.value?.get("email")?.asText().orEmpty(),
             username = userObj?.value?.get("username")?.asText().orEmpty(),
             displayName = userObj?.value?.get("displayName")?.asText().orEmpty(),
+            avatarUrl = userObj?.value?.get("avatarUrl")?.asText().orEmpty(),
             tier = userObj?.value?.get("tier")?.asText()?.ifBlank { "regular" } ?: "regular",
             createdAt = userObj?.value?.get("createdAt")?.asText().orEmpty(),
         )
@@ -311,38 +294,20 @@ class VibeXAccountRepository(context: Context) {
                 totalRecords = usageObj?.value?.get("totalRecords")?.asNumber()?.toInt() ?: 0,
                 modelNames = modelNames,
             ),
+            relayPermission = obj.value["relayPermission"]?.asBool(),
+            assignedRelayServer = obj.value["assignedRelayServer"]?.asObject()?.let { relay ->
+                AssignedRelayServer(
+                    publicOrigin = relay.value["publicOrigin"]?.asText().orEmpty(),
+                    relayHost = relay.value["relayHost"]?.asText().orEmpty(),
+                    relayPort = relay.value["relayPort"]?.asNumber()?.toInt() ?: 0,
+                )
+            },
         )
     }
 
-    suspend fun fetchHostConfigs(): List<VibeXAccountHostConfigItem> = withContext(Dispatchers.IO) {
+    suspend fun fetchDesktops(): List<AccountDesktop> = withContext(Dispatchers.IO) {
         val token = getToken() ?: throw VibeXAccountException("signed_out")
-        val obj = requestObject("/api/account/desktop/host-configs", "GET", null, token = token)
-        val list = obj.value["hosts"]?.asArray()?.value
-            ?: obj.value["records"]?.asArray()?.value
-            ?: emptyList()
-        val results = mutableListOf<VibeXAccountHostConfigItem>()
-        for (entry in list) {
-            val rawObj = entry.asObject() ?: continue
-            val snap = rawObj.value["snapshot"]?.asObject() ?: rawObj
-            val hostId = snap.value["hostId"]?.asText()?.trim().orEmpty()
-            if (hostId.isEmpty() || results.any { it.hostId == hostId }) continue
-            val hostName = snap.value["hostName"]?.asText()?.trim().orEmpty().ifEmpty { "VibeX Desktop" }
-            val kind = snap.value["kind"]?.asText()?.trim().orEmpty().ifEmpty { "local" }
-            val osType = snap.value["osType"]?.asText()?.trim().orEmpty()
-            val osArch = snap.value["osArch"]?.asText()?.trim().orEmpty()
-            val enabledAgentsCount = snap.value["agents"]?.asArray()?.value.orEmpty().count { ag ->
-                ag.asObject()?.value?.get("enabled")?.asBool() == true
-            }
-            results += VibeXAccountHostConfigItem(
-                hostId = hostId,
-                hostName = hostName,
-                kind = kind,
-                osType = osType,
-                osArch = osArch,
-                enabledAgentsCount = enabledAgentsCount,
-            )
-        }
-        results
+        AccountDesktops.parse(requestObject("/api/account/desktop/host-configs", "GET", null, token = token))
     }
 
     suspend fun fetchSavedHosts(): List<VibeXSyncableHostProfile> = withContext(Dispatchers.IO) {

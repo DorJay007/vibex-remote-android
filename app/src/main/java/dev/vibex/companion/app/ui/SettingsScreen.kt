@@ -213,7 +213,7 @@ private fun SettingsIndex(
                         "局域网直连 · $hostAddr"
                     }
                 } else {
-                    "扫码、连接码或云服务跨网配对"
+                    "扫码或输入连接码"
                 }
                 IosSettingsRow(
                     icon = Icons.Rounded.Computer,
@@ -627,10 +627,7 @@ private fun LazyListScope.ConnectionSettings(
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clickable {
-                            model.selectDiscoveryMode("lan")
-                            onManualPair()
-                        }
+                        .clickable(onClick = onManualPair)
                         .padding(horizontal = 16.dp, vertical = 16.dp),
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(14.dp),
@@ -647,7 +644,7 @@ private fun LazyListScope.ConnectionSettings(
                     Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(3.dp)) {
                         Text("配对新的电脑", fontSize = 16.sp, fontWeight = FontWeight.Bold, color = colors.accent)
                         Text(
-                            "选择局域网直连或云服务跨网配对",
+                            "扫码或输入连接码",
                             fontSize = 12.5.sp,
                             color = colors.textSecondary,
                             maxLines = 1,
@@ -1590,7 +1587,7 @@ private fun LazyListScope.AccountSettings(
         item { GroupLabel("电脑跨端云同步") }
         item {
             val colors = VibexTheme.colors
-            val syncedCount = maxOf(state.accountHostConfigs.size, state.accountSavedHosts.size)
+            val syncedCount = maxOf(state.accountDesktops.size, state.accountSavedHosts.size)
             IosSettingsCard {
                 Column(Modifier.fillMaxWidth()) {
                     IosSettingsRow(

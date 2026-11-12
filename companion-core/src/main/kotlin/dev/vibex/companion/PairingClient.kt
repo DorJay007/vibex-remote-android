@@ -31,6 +31,21 @@ class PairingException(message: String) : RuntimeException(message)
 class MobileDeviceConflictException(val existingDeviceName: String) :
     RuntimeException("当前电脑已连接手机「$existingDeviceName」")
 
+/** Why the host refused an account-linked connect request (`details.reason`). */
+enum class AccountLinkFailure(val reason: String) {
+    AccountMismatch("account_mismatch"),
+    AccountTokenInvalid("account_token_invalid"),
+    HostAccountSignedOut("host_account_signed_out"),
+    VerificationUnavailable("account_verification_unavailable"),
+    ;
+
+    companion object {
+        fun fromReason(reason: String?): AccountLinkFailure? = entries.firstOrNull { it.reason == reason }
+    }
+}
+
+class AccountLinkException(val failure: AccountLinkFailure) : RuntimeException(failure.reason)
+
 data class CompanionSession(
     val origin: HostOrigin,
     val credential: DeviceCredential,
@@ -58,14 +73,23 @@ class PairingClient(
 ) {
     private fun throwIfMobileConflict(status: Int, body: String) {
         if (status != 409) return
-        val root = runCatching { JsonValue.parse(body) as? JsonValue.Object }.getOrNull() ?: return
-        val details = root.value["details"] as? JsonValue.Object ?: return
+        val details = errorDetails(body) ?: return
         if (details.optionalText("reason") == "mobile_device_conflict") {
             val existingName = details.optionalText("existing_device_name")
                 ?.takeIf { it.isNotBlank() }
                 ?: "另一台手机"
             throw MobileDeviceConflictException(existingName)
         }
+    }
+
+    private fun throwIfAccountLinkFailure(body: String) {
+        val failure = AccountLinkFailure.fromReason(errorDetails(body)?.optionalText("reason")) ?: return
+        throw AccountLinkException(failure)
+    }
+
+    private fun errorDetails(body: String): JsonValue.Object? {
+        val root = runCatching { JsonValue.parse(body) as? JsonValue.Object }.getOrNull() ?: return null
+        return root.value["details"] as? JsonValue.Object
     }
 
     fun redeem(
@@ -133,6 +157,7 @@ class PairingClient(
         publicKeyEd25519: String? = null,
         sessionNonce: String? = null,
         replaceExistingMobile: Boolean = false,
+        accountToken: String? = null,
     ): DeviceConnectRequestResult {
         val fields = linkedMapOf<String, JsonValue>(
             "device_name" to JsonValue.Text(deviceName.trim().ifBlank { "Android Companion" }),
@@ -145,6 +170,9 @@ class PairingClient(
         sessionNonce?.trim()?.takeIf { it.isNotEmpty() }?.let {
             fields["session_nonce"] = JsonValue.Text(it)
         }
+        accountToken?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            fields["account_token"] = JsonValue.Text(it)
+        }
         val response = transport.execute(
             "POST",
             origin.resolve("/api/v1/auth/connect-requests"),
@@ -156,6 +184,7 @@ class PairingClient(
         )
         if (response.status !in 200..299) {
             throwIfMobileConflict(response.status, response.body)
+            throwIfAccountLinkFailure(response.body)
             throw PairingException("发起连接请求失败 (${response.status})")
         }
         return parseConnectRequestResult(response.body)
@@ -282,15 +311,7 @@ class PairingClient(
             }.getOrNull()
         }
 
-        fun discoverLanHosts(
-            port: Int = 17891,
-            extraRelayOrigins: Collection<String> = emptyList(),
-            includeCloudRelay: Boolean = false,
-            cloudOnly: Boolean = false,
-        ): List<DiscoveredLanHost> {
-            if (cloudOnly) {
-                return discoverSameExitPublicHosts(extraRelayOrigins = extraRelayOrigins)
-            }
+        fun discoverLanHosts(port: Int = 17891): List<DiscoveredLanHost> {
             val candidates = LinkedHashSet<String>()
             val localPorts = (listOf(port, 17899) + (17891..17899)).distinct()
             for (localPort in localPorts) {
@@ -356,10 +377,7 @@ class PairingClient(
             } finally {
                 pool.shutdownNow()
             }
-            if (localFound.isNotEmpty() || !includeCloudRelay) {
-                return localFound
-            }
-            return discoverSameExitPublicHosts(extraRelayOrigins = extraRelayOrigins)
+            return localFound
         }
 
         fun sha256Hex(input: String): String {
@@ -396,24 +414,6 @@ class PairingClient(
                 }
             }
             return resolved.toList()
-        }
-
-        fun discoverSameExitPublicHosts(
-            extraRelayOrigins: Collection<String> = emptyList(),
-            timeoutMs: Int = 1800,
-        ): List<DiscoveredLanHost> {
-            // Cloud discovery strictly probes only the user's own known/paired origins.
-            // Never query global or shared-subnet unauthenticated host lists.
-            val results = mutableListOf<DiscoveredLanHost>()
-            for (extra in extraRelayOrigins) {
-                if ((extra.contains("/t/") || extra.startsWith("https://", ignoreCase = true)) && results.none { it.origin == extra }) {
-                    val verified = probeHostHealth(extra, timeoutMs = timeoutMs)
-                    if (verified != null) {
-                        results.add(verified)
-                    }
-                }
-            }
-            return results.distinctBy { it.hostId ?: it.origin }
         }
 
         fun resolvePairingCodeRendezvous(
